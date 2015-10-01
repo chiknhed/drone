@@ -19,10 +19,10 @@
 #define ESC_MAX               115
 #define ESC_ARM_DELAY         5000
 
-#define ESC_A 5
-#define ESC_B 4
-#define ESC_C 3
-#define ESC_D 2
+#define ESC_A 9
+#define ESC_B 6
+#define ESC_C 5
+#define ESC_D 3
 
 #define TAKEOFF_Z_ACCEL      100
 #define TAKEOFF_STEP_DELAY     500
@@ -30,14 +30,17 @@
 #define TAKEOFF_GOUP_ADJUST    400
 #define TAKEOFF_HOVER_DELAY   1000
 
-#define PID_AGG_P           1.0
-#define PID_AGG_I           1.0
-#define PID_AGG_D           1.0
+#define GYRO_FACTOR 0.01
+#define ACCEL_FACTOR 0.01
+
+#define PID_AGG_P           0.5
+#define PID_AGG_I           0.5
+#define PID_AGG_D           0.5
 #define PID_CONS_P          0.1
 #define PID_CONS_I          0.1
 #define PID_CONS_D          0.1
-#define PID_CONS_THRESH_GYRO 200
-#define PID_CONS_THRESH_ACCEL 200
+#define PID_CONS_THRESH_GYRO 5.0
+#define PID_CONS_THRESH_ACCEL 5.0
 #define PID_XY_INFLUENCE    30
 
 double orig_accel_z;
@@ -46,6 +49,9 @@ double adj_accel_z;
 double adj_gyro_x, adj_gyro_y;
 double accel_z;
 double gyro_x, gyro_y;
+
+unsigned long repos_last_time;
+unsigned long repos_remaining_time;
 
 double v_ac, v_bd, velocity;
 
@@ -101,16 +107,19 @@ void setup() {
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
   vPID.SetOutputLimits(ESC_MIN, ESC_MAX);
+
+  Serial.println(F("Starting Motors"));
+  arm();
 }
 
 void set_servos(void)
 {
   double va, vb, vc, vd;
   
-  va = velocity - v_ac - v_bd;
-  vb = velocity - v_ac + v_bd;
-  vc = velocity + v_ac - v_bd;
-  vd = velocity + v_ac + v_bd;
+  va = velocity - v_ac;
+  vb = velocity - v_bd;
+  vc = velocity + v_ac;
+  vd = velocity + v_bd;
 
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
@@ -151,12 +160,23 @@ void reset_adjust_variables(void)
 void position_adjust(void)
 {
   double gap;
+  unsigned long current_time;
+
+  if (repos_last_time == 0) repos_last_time = millis();
+  current_time = millis();
+  
+  if (current_time - repos_last_time > repos_remaining_time) {
+    repos_remaining_time = 0;
+    reset_adjust_variables();
+  } else {
+    repos_remaining_time -= current_time - repos_last_time;
+  }
 
   mpu6050.ReadAvrRegisters(100);
 
-  accel_z = mpu6050.GetAccelZ() - orig_accel_z;
-  gyro_x = mpu6050.GetGyroX() - orig_gyro_x;
-  gyro_y = mpu6050.GetGyroY() - orig_gyro_y;
+  accel_z = (mpu6050.GetAccelZ() - orig_accel_z) * ACCEL_FACTOR;
+  gyro_x = (mpu6050.GetGyroX() - orig_gyro_x) * GYRO_FACTOR;
+  gyro_y = (mpu6050.GetGyroY() - orig_gyro_y) * GYRO_FACTOR;
 
   Serial.println(accel_z);
   Serial.println(gyro_x);
@@ -200,13 +220,12 @@ void printStatus(YunClient client)
   client.println();
 }
 
-void take_off()
+void arm(void)
 {
   unsigned long take_off_time;
   reset_sensor();
   reset_adjust_variables();
-
-  Serial.println(F("Taking off"));
+  
   velocity = ESC_MIN;
   v_ac = 0;
   v_bd = 0;
@@ -214,14 +233,6 @@ void take_off()
   Serial.println(ESC_MIN);
   Serial.println();
   delay(ESC_ARM_DELAY);
-
-  Serial.println(F("Go up"));
-  take_off_time = millis();    /* tricky -_-;;*/
-  while (millis() - take_off_time < TAKEOFF_GOUP_DELAY) {
-    adj_accel_z = 100;
-    position_adjust();
-    delay(REPOSITION_PERIOD_MS);
-  }
 }
 
 void process(YunClient client)
@@ -233,23 +244,30 @@ void process(YunClient client)
   Serial.println(param);
   if(command == "up") {
     if (!did_take_off) {
-      take_off();
+      repos_remaining_time = 5000;
+      adj_accel_z = param;
       did_take_off = 1;
     } else {
+      repos_remaining_time = 1000;
       adj_accel_z = param;
     }
   } if (command == "down") {
+    repos_remaining_time = 1000;
     adj_accel_z = -param;
   }else if (command == "forward") {
+    repos_remaining_time = 1000;
     adj_gyro_x = -param;
     adj_gyro_y = -param;
   } else if (command == "backward") {
+    repos_remaining_time = 1000;
     adj_gyro_x = param;
     adj_gyro_y = param;
   } else if (command == "left") {
+    repos_remaining_time = 1000;
     adj_gyro_x = -param;
     adj_gyro_y = param;
   } else if (command == "right") {
+    repos_remaining_time = 1000;
     adj_gyro_x = param;
     adj_gyro_y = -param;
   }
