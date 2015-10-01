@@ -6,32 +6,24 @@
 #include <Servo.h>
 #include <PID_v1.h>
 
-#define NO_MOTOR_DEBUG
-#ifdef NO_MOTOR_DEBUG
-#define REPOSITION_PERIOD_MS  100ul
-#else
 #define REPOSITION_PERIOD_MS  30ul
-#endif
-
 #define MOVE_DURATION_MS      2000
 
-#define ESC_MIN               22
-#define ESC_MAX               115
-#define ESC_ARM_DELAY         5000
+#define BALANCE_FACTOR           0.01
 
+#define ESC_MIN               22
+#define ESC_WORKING_MIN       70
+#define ESC_MAX               150
+#define ESC_ARM_DELAY         5000
+  
 #define ESC_A 9
 #define ESC_B 6
 #define ESC_C 5
-#define ESC_D 3
+#define ESC_D 10
 
 #define TAKEOFF_Z_ACCEL      100
 #define TAKEOFF_STEP_DELAY     500
-#define TAKEOFF_GOUP_DELAY    5000
-#define TAKEOFF_GOUP_ADJUST    400
-#define TAKEOFF_HOVER_DELAY   1000
-
-#define GYRO_FACTOR 0.01
-#define ACCEL_FACTOR 0.01
+#define TAKEOFF_GOUP_DELAY    3000
 
 #define PID_AGG_P           0.5
 #define PID_AGG_I           0.5
@@ -41,7 +33,7 @@
 #define PID_CONS_D          0.1
 #define PID_CONS_THRESH_GYRO 5.0
 #define PID_CONS_THRESH_ACCEL 5.0
-#define PID_XY_INFLUENCE    30
+#define PID_XY_INFLUENCE    20.0
 
 #define GYRO_READ_AVERAGE_COUNT  30
 
@@ -59,8 +51,8 @@ double v_ac, v_bd, velocity;
 
 YunServer server;
 Servo a, b, c, d;
-PID xPID(&gyro_y, &v_bd, &adj_gyro_x, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
-PID yPID(&gyro_x, &v_ac, &adj_gyro_y, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
+PID xPID(&gyro_y, &v_bd, &adj_gyro_x, PID_AGG_P, PID_AGG_I, PID_AGG_D, REVERSE);
+PID yPID(&gyro_x, &v_ac, &adj_gyro_y, PID_AGG_P, PID_AGG_I, PID_AGG_D, REVERSE);
 PID vPID(&accel_z, &velocity, &adj_accel_z, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
 
 int did_take_off = 0;
@@ -74,23 +66,15 @@ void reset_sensor(void)
   orig_gyro_y = mpu6050.GetGyroY();
 
   Serial.println(F("Starting Values :"));
-  Serial.print(F("Accel (x y z)\n"));
+  Serial.print(F("Accel z : "));
   Serial.print(orig_accel_z, DEC); Serial.println();
-  Serial.print(F("Gyro (x y z)\n"));
-  Serial.print(orig_gyro_x, DEC); Serial.println();
+  Serial.print(F("Gyro x y "));
+  Serial.print(orig_gyro_x, DEC); Serial.print(F(" "));
   Serial.print(orig_gyro_y, DEC); Serial.println();
 }
 
 void setup() {
   Serial.begin(115200);
-
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
-  Bridge.begin();
-  digitalWrite(13, LOW);
-
-  server.listenOnLocalhost();
-  server.begin();
 
   Serial.println(F("initializing MPU6050"));
   mpu6050.begin();
@@ -101,37 +85,45 @@ void setup() {
   c.attach(ESC_C);
   d.attach(ESC_D);
   delay(100);
+  
+  Serial.println(F("Arming Motors"));
+  arm(0);
 
+  pinMode(13, OUTPUT);
+  digitalWrite(13, HIGH);
+  Bridge.begin();
+  digitalWrite(13, LOW);
+
+  server.listenOnLocalhost();
+  server.begin();
+  
   Serial.println(F("initializing PID"));
   xPID.SetMode(AUTOMATIC);
   xPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   yPID.SetMode(AUTOMATIC);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
-  vPID.SetOutputLimits(ESC_MIN, ESC_MAX);
-
-  Serial.println(F("Starting Motors"));
-  arm();
+  vPID.SetOutputLimits(ESC_WORKING_MIN, ESC_MAX);
 }
 
 void set_servos(void)
 {
   double va, vb, vc, vd;
   
-  va = velocity - v_ac;
-  vb = velocity - v_bd;
-  vc = velocity + v_ac;
-  vd = velocity + v_bd;
+  va = velocity * ((100.0 + v_ac)/100.0);
+  vb = velocity * ((100.0 + v_bd)/100.0);
+  vc = velocity * (abs(-100.0 + v_ac)/100.0);
+  vd = velocity * (abs(-100.0 + v_bd)/100.0);
 
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
   if (vc > ESC_MAX) vc = ESC_MAX;
   if (vd > ESC_MAX) vd = ESC_MAX;
 
-  if (va < ESC_MIN) va = ESC_MIN;
-  if (vb < ESC_MIN) vb = ESC_MIN;
-  if (vc < ESC_MIN) vc = ESC_MIN;
-  if (vd < ESC_MIN) vd = ESC_MIN;
+  if (va < ESC_WORKING_MIN) va = ESC_WORKING_MIN;
+  if (vb < ESC_WORKING_MIN) vb = ESC_WORKING_MIN;
+  if (vc < ESC_WORKING_MIN) vc = ESC_WORKING_MIN;
+  if (vd < ESC_WORKING_MIN) vd = ESC_WORKING_MIN;
   
   a.write(va);
   b.write(vb);
@@ -176,9 +168,9 @@ void position_adjust(void)
 
   mpu6050.ReadAvrRegisters(GYRO_READ_AVERAGE_COUNT);
 
-  accel_z = (mpu6050.GetAccelZ() - orig_accel_z) * ACCEL_FACTOR;
-  gyro_x = (mpu6050.GetGyroX() - orig_gyro_x) * GYRO_FACTOR;
-  gyro_y = (mpu6050.GetGyroY() - orig_gyro_y) * GYRO_FACTOR;
+  accel_z = (mpu6050.GetAccelZ() - orig_accel_z);
+  gyro_x = (mpu6050.GetGyroX() - orig_gyro_x);
+  gyro_y = (mpu6050.GetGyroY() - orig_gyro_y);
 
   Serial.println(accel_z);
   Serial.println(gyro_x);
@@ -222,19 +214,19 @@ void printStatus(YunClient client)
   client.println();
 }
 
-void arm(void)
+void arm(int delay_req)
 {
   unsigned long take_off_time;
-  reset_sensor();
-  reset_adjust_variables();
-  
-  velocity = ESC_MIN;
-  v_ac = 0;
-  v_bd = 0;
-  set_servos();
+    
+  a.write(ESC_MIN);
+  b.write(ESC_MIN);
+  c.write(ESC_MIN);
+  d.write(ESC_MIN);
   Serial.println(ESC_MIN);
   Serial.println();
-  delay(ESC_ARM_DELAY);
+  
+  if (delay_req)
+    delay(ESC_ARM_DELAY);
 }
 
 void process(YunClient client)
@@ -246,6 +238,8 @@ void process(YunClient client)
   Serial.println(param);
   if(command == "up") {
     if (!did_take_off) {
+      reset_sensor();
+      reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
       adj_accel_z = param;
       did_take_off = 1;
@@ -276,10 +270,8 @@ void process(YunClient client)
     repos_remaining_time = 0;
     did_take_off = 0;
     reset_adjust_variables();
-    arm();
+    arm(1);
   }
-
-  printStatus(client);
 }
 
 void loop() {
