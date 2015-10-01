@@ -26,7 +26,7 @@
 
 #define TAKEOFF_Z_ACCEL      100
 #define TAKEOFF_STEP_DELAY     500
-#define TAKEOFF_GOUP_DELAY    3000
+#define TAKEOFF_GOUP_DELAY    5000
 #define TAKEOFF_GOUP_ADJUST    400
 #define TAKEOFF_HOVER_DELAY   1000
 
@@ -59,8 +59,8 @@ double v_ac, v_bd, velocity;
 
 YunServer server;
 Servo a, b, c, d;
-PID xPID(&gyro_y, &v_ac, &adj_gyro_x, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
-PID yPID(&gyro_x, &v_bd, &adj_gyro_y, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
+PID xPID(&gyro_y, &v_bd, &adj_gyro_x, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
+PID yPID(&gyro_x, &v_ac, &adj_gyro_y, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
 PID vPID(&accel_z, &velocity, &adj_accel_z, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
 
 int did_take_off = 0;
