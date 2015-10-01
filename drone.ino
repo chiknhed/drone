@@ -272,6 +272,11 @@ void process(YunClient client)
     repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = param;
     adj_gyro_y = -param;
+  } else if (command == "emg") {
+    repos_remaining_time = 0;
+    did_take_off = 0;
+    reset_adjust_variables();
+    arm();
   }
 
   printStatus(client);
