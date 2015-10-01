@@ -13,7 +13,7 @@
 #define REPOSITION_PERIOD_MS  30ul
 #endif
 
-#define MOVE_DURATION_MS      1000
+#define MOVE_DURATION_MS      2000
 
 #define ESC_MIN               22
 #define ESC_MAX               115
@@ -26,7 +26,7 @@
 
 #define TAKEOFF_Z_ACCEL      100
 #define TAKEOFF_STEP_DELAY     500
-#define TAKEOFF_GOUP_DELAY    5000
+#define TAKEOFF_GOUP_DELAY    3000
 #define TAKEOFF_GOUP_ADJUST    400
 #define TAKEOFF_HOVER_DELAY   1000
 
@@ -42,6 +42,8 @@
 #define PID_CONS_THRESH_GYRO 5.0
 #define PID_CONS_THRESH_ACCEL 5.0
 #define PID_XY_INFLUENCE    30
+
+#define GYRO_READ_AVERAGE_COUNT  30
 
 double orig_accel_z;
 int orig_gyro_x, orig_gyro_y;
@@ -172,7 +174,7 @@ void position_adjust(void)
     repos_remaining_time -= current_time - repos_last_time;
   }
 
-  mpu6050.ReadAvrRegisters(100);
+  mpu6050.ReadAvrRegisters(GYRO_READ_AVERAGE_COUNT);
 
   accel_z = (mpu6050.GetAccelZ() - orig_accel_z) * ACCEL_FACTOR;
   gyro_x = (mpu6050.GetGyroX() - orig_gyro_x) * GYRO_FACTOR;
@@ -244,30 +246,30 @@ void process(YunClient client)
   Serial.println(param);
   if(command == "up") {
     if (!did_take_off) {
-      repos_remaining_time = 5000;
+      repos_remaining_time = TAKEOFF_GOUP_DELAY;
       adj_accel_z = param;
       did_take_off = 1;
     } else {
-      repos_remaining_time = 1000;
+      repos_remaining_time = MOVE_DURATION_MS;
       adj_accel_z = param;
     }
   } if (command == "down") {
-    repos_remaining_time = 1000;
+    repos_remaining_time = MOVE_DURATION_MS;
     adj_accel_z = -param;
   }else if (command == "forward") {
-    repos_remaining_time = 1000;
+    repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = -param;
     adj_gyro_y = -param;
   } else if (command == "backward") {
-    repos_remaining_time = 1000;
+    repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = param;
     adj_gyro_y = param;
   } else if (command == "left") {
-    repos_remaining_time = 1000;
+    repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = -param;
     adj_gyro_y = param;
   } else if (command == "right") {
-    repos_remaining_time = 1000;
+    repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = param;
     adj_gyro_y = -param;
   }
