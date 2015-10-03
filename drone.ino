@@ -1,17 +1,15 @@
 #include <Wire.h>
-#include <MPU6050.h>
 #include <Bridge.h>
 #include <YunServer.h>
 #include <YunClient.h>
 #include <Servo.h>
 #include <PID_v1.h>
+#include <I2Cdev.h>
+#include <helper_3dmath.h>
+#include <MPU6050_6Axis_MotionApps20.h>
 
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      2000
-
-#define GYRO_FACTOR           1.0
-#define ACCEL_FACTOR          1.0
-#define BALANCE_FACTOR           1.0
 
 #define ESC_MIN               22
 #define ESC_WORKING_MIN       70
@@ -49,30 +47,28 @@ PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 0.001, 0.0001, 0.005, DIRECT);
 PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 0.001, 0.0001, 0.005, DIRECT);
 PID vPID(&accel_z, &velocity, &adj_accel_z, 0.001, 0.001, 0.005, DIRECT);
 
+MPU6050 mpu;
+Quaternion q;                          // quaternion for mpu output
+VectorFloat gravity;                   // gravity vector for ypr
+float ypr[3] = {0.0f,0.0f,0.0f};       // yaw pitch roll values
+float yprLast[3] = {0.0f, 0.0f, 0.0f};
+
+uint8_t mpuIntStatus;                  // mpu statusbyte
+uint8_t devStatus;                     // device status    
+uint16_t packetSize;                   // estimated packet size  
+uint16_t fifoCount;                    // fifo buffer size   
+uint8_t fifoBuffer[64];                // fifo buffer 
+
+volatile bool mpuInterrupt = false;    //interrupt flag
+
 int did_take_off = 0;
 
-void reset_sensor(void)
-{
-  mpu6050.ReadAvrRegisters(1000);
-
-  orig_accel_z = mpu6050.GetAccelZ();
-  orig_gyro_x = mpu6050.GetGyroX();
-
-  Serial.println(F("Starting Values :"));
-  Serial.print(F("Accel z : "));
-  Serial.print(orig_accel_z, DEC); Serial.println();
-  Serial.print(F("Gyro x y "));
-  Serial.print(orig_gyro_x, DEC); Serial.print(F(" "));
-  Serial.print(orig_gyro_y, DEC); Serial.println(F("\n"));
-
-  repos_last_time = 0;
-}
 
 void setup() {
   Serial.begin(115200);
 
   Serial.println(F("initializing MPU6050"));
-  mpu6050.begin();
+  initMPU();
 
   Serial.println(F("initializing Motors")); 
   a.attach(ESC_A);
@@ -99,6 +95,45 @@ void setup() {
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
   vPID.SetOutputLimits(ESC_WORKING_MIN, ESC_MAX);
+}
+
+void loop() {
+  YunClient client = server.accept();
+
+  if (client) {
+    process(client);
+    client.stop();
+  }
+
+  while(!mpuInterrupt && fifoCount < packetSize){
+     
+    /* Do nothing while MPU is not working
+     * This should be a VERY short period
+     */
+      
+  }
+
+  if(did_take_off)
+    position_adjust();
+}
+
+void initMPU(){
+  
+  Wire.begin();
+  mpu.initialize();
+  devStatus = mpu.dmpInitialize();
+  if(devStatus == 0){
+  
+    mpu.setDMPEnabled(true);
+    attachInterrupt(0, dmpDataReady, RISING);
+    mpuIntStatus = mpu.getIntStatus();
+    packetSize = mpu.dmpGetFIFOPacketSize();
+    
+  }
+}
+
+inline void dmpDataReady() {
+    mpuInterrupt = true;
 }
 
 void set_servos(void)
@@ -182,11 +217,8 @@ void position_adjust(void)
 
   print_adjust_variables();
 
-  mpu6050.ReadAvrRegisters(GYRO_READ_AVERAGE_COUNT);
-
-  accel_z = (mpu6050.GetAccelZ() - orig_accel_z) * ACCEL_FACTOR;
-  gyro_x = (mpu6050.GetGyroX() - orig_gyro_x) * GYRO_FACTOR;
-  gyro_y = (mpu6050.GetGyroY() - orig_gyro_y) * GYRO_FACTOR;
+  getYPR();
+  getAccel();
 
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
@@ -202,6 +234,30 @@ void position_adjust(void)
   Serial.println(velocity);
   
   set_servos();
+}
+
+void getYPR(){
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+    fifoCount = mpu.getFIFOCount();
+    
+    if((mpuIntStatus & 0x10) || fifoCount >= 1024){ 
+      mpu.resetFIFO(); 
+    }else if(mpuIntStatus & 0x02){
+      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+      mpu.getFIFOBytes(fifoBuffer, packetSize);
+      fifoCount -= packetSize;
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+    }
+
+    gyro_x = ypr[2];
+    gyro_y = ypr[1];
+}
+
+void getAccel(void) {
+  accel_z = mpu.getAccelerationY();
 }
 
 void printStatus(YunClient client)
@@ -236,7 +292,6 @@ void process(YunClient client)
   Serial.println(param);
   if(command == "up") {
     if (!did_take_off) {
-      reset_sensor();
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
       adj_accel_z = -param;
@@ -270,20 +325,4 @@ void process(YunClient client)
     reset_adjust_variables();
     arm(1);
   }
-}
-
-void loop() {
-  digitalWrite(13, LOW);
-  YunClient client = server.accept();
-
-  if (client) {
-    digitalWrite(13, HIGH);
-    process(client);
-    client.stop();
-    digitalWrite(13, LOW);
-  }
-
-  if(did_take_off)
-    position_adjust();
-  
 }
