@@ -9,7 +9,9 @@
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      2000
 
-#define BALANCE_FACTOR           0.01
+#define GYRO_FACTOR           1.0
+#define ACCEL_FACTOR          1.0
+#define BALANCE_FACTOR           1.0
 
 #define ESC_MIN               22
 #define ESC_WORKING_MIN       70
@@ -17,25 +19,17 @@
 #define ESC_ARM_DELAY         5000
   
 #define ESC_A 9
-#define ESC_B 6
-#define ESC_C 5
-#define ESC_D 10
+#define ESC_B 8
+#define ESC_C 7
+#define ESC_D 6
 
 #define TAKEOFF_Z_ACCEL      100
 #define TAKEOFF_STEP_DELAY     500
-#define TAKEOFF_GOUP_DELAY    3000
+#define TAKEOFF_GOUP_DELAY    5000
 
-#define PID_AGG_P           0.5
-#define PID_AGG_I           0.5
-#define PID_AGG_D           0.5
-#define PID_CONS_P          0.1
-#define PID_CONS_I          0.1
-#define PID_CONS_D          0.1
-#define PID_CONS_THRESH_GYRO 5.0
-#define PID_CONS_THRESH_ACCEL 5.0
 #define PID_XY_INFLUENCE    20.0
 
-#define GYRO_READ_AVERAGE_COUNT  30
+#define GYRO_READ_AVERAGE_COUNT  20
 
 double orig_accel_z;
 int orig_gyro_x, orig_gyro_y;
@@ -51,9 +45,9 @@ double v_ac, v_bd, velocity;
 
 YunServer server;
 Servo a, b, c, d;
-PID xPID(&gyro_y, &v_bd, &adj_gyro_x, PID_AGG_P, PID_AGG_I, PID_AGG_D, REVERSE);
-PID yPID(&gyro_x, &v_ac, &adj_gyro_y, PID_AGG_P, PID_AGG_I, PID_AGG_D, REVERSE);
-PID vPID(&accel_z, &velocity, &adj_accel_z, PID_AGG_P, PID_AGG_I, PID_AGG_D, DIRECT);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 0.001, 0.0001, 0.005, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 0.001, 0.0001, 0.005, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 0.001, 0.001, 0.005, DIRECT);
 
 int did_take_off = 0;
 
@@ -63,14 +57,15 @@ void reset_sensor(void)
 
   orig_accel_z = mpu6050.GetAccelZ();
   orig_gyro_x = mpu6050.GetGyroX();
-  orig_gyro_y = mpu6050.GetGyroY();
 
   Serial.println(F("Starting Values :"));
   Serial.print(F("Accel z : "));
   Serial.print(orig_accel_z, DEC); Serial.println();
   Serial.print(F("Gyro x y "));
   Serial.print(orig_gyro_x, DEC); Serial.print(F(" "));
-  Serial.print(orig_gyro_y, DEC); Serial.println();
+  Serial.print(orig_gyro_y, DEC); Serial.println(F("\n"));
+
+  repos_last_time = 0;
 }
 
 void setup() {
@@ -151,13 +146,32 @@ void reset_adjust_variables(void)
   adj_gyro_x = adj_gyro_y  = 0;
 }
 
+void print_adjust_variables()
+{
+  if (adj_accel_z) {
+    Serial.print(F("adj_accel_z : "));
+    Serial.println(adj_accel_z);
+  }
+
+  if (adj_gyro_x) {
+    Serial.print(F("adj_gyro_x : "));
+    Serial.println(adj_gyro_x);
+  }
+
+  if (adj_gyro_y) {
+    Serial.print(F("adj_gyro_y : "));
+    Serial.println(adj_gyro_y);
+  }
+}
+
 void position_adjust(void)
 {
-  double gap;
   unsigned long current_time;
 
   if (repos_last_time == 0) repos_last_time = millis();
   current_time = millis();
+  Serial.print(F("Current Time : "));
+  Serial.println(current_time);
   
   if (current_time - repos_last_time > repos_remaining_time) {
     repos_remaining_time = 0;
@@ -166,37 +180,21 @@ void position_adjust(void)
     repos_remaining_time -= current_time - repos_last_time;
   }
 
+  print_adjust_variables();
+
   mpu6050.ReadAvrRegisters(GYRO_READ_AVERAGE_COUNT);
 
-  accel_z = (mpu6050.GetAccelZ() - orig_accel_z);
-  gyro_x = (mpu6050.GetGyroX() - orig_gyro_x);
-  gyro_y = (mpu6050.GetGyroY() - orig_gyro_y);
+  accel_z = (mpu6050.GetAccelZ() - orig_accel_z) * ACCEL_FACTOR;
+  gyro_x = (mpu6050.GetGyroX() - orig_gyro_x) * GYRO_FACTOR;
+  gyro_y = (mpu6050.GetGyroY() - orig_gyro_y) * GYRO_FACTOR;
 
+  Serial.print(F("accel_z : "));
   Serial.println(accel_z);
+  Serial.print(F("gyro_x : "));
   Serial.println(gyro_x);
+  Serial.print(F("gyro_y : "));
   Serial.println(gyro_y);
-
-  gap = abs(gyro_x - adj_gyro_x);
-  if (gap < PID_CONS_THRESH_GYRO) {
-    xPID.SetTunings(PID_CONS_P, PID_CONS_I, PID_CONS_D);
-  } else {
-    xPID.SetTunings(PID_AGG_P, PID_AGG_I, PID_AGG_D);
-  }
-
-  gap = abs(gyro_y - adj_gyro_y);
-  if (gap < PID_CONS_THRESH_GYRO) {
-    yPID.SetTunings(PID_CONS_P, PID_CONS_I, PID_CONS_D);
-  } else {
-    yPID.SetTunings(PID_AGG_P, PID_AGG_I, PID_AGG_D);
-  }
-
-  gap = abs(accel_z - adj_accel_z);
-  if (gap < PID_CONS_THRESH_ACCEL) {
-    vPID.SetTunings(PID_CONS_P, PID_CONS_I, PID_CONS_D);
-  } else {
-    vPID.SetTunings(PID_AGG_P, PID_AGG_I, PID_AGG_D);
-  }
-
+  
   xPID.Compute();
   yPID.Compute();
   vPID.Compute();
@@ -241,11 +239,11 @@ void process(YunClient client)
       reset_sensor();
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
-      adj_accel_z = param;
+      adj_accel_z = -param;
       did_take_off = 1;
     } else {
       repos_remaining_time = MOVE_DURATION_MS;
-      adj_accel_z = param;
+      adj_accel_z = -param;
     }
   } if (command == "down") {
     repos_remaining_time = MOVE_DURATION_MS;
