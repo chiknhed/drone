@@ -5,6 +5,8 @@
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
 
+//#define VERBOSE_DEBUG
+
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      1000
 
@@ -37,9 +39,9 @@ unsigned long repos_remaining_time;
 double v_ac, v_bd, velocity;
 
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 1, 1, 1, REVERSE);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 1, 1, 1, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 20, 10, 1, REVERSE);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 1, 1, 0.7, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 1, 1, 0.7, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 5, 2, 1, DIRECT);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -145,8 +147,13 @@ void set_servos(void)
   c.write(vc);
   d.write(vd);
 
+#ifdef VERBOSE_DEBUG
+  Serial.print(F("velocity : "));
+  Serial.println(velocity);
+#endif
   Serial.print(F("v_ac :"));
   Serial.println(v_ac);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("v_bd :"));
   Serial.println(v_bd);
   Serial.print(F("va :"));
@@ -158,6 +165,7 @@ void set_servos(void)
   Serial.print(F("vd :"));
   Serial.println(vd);
   Serial.println();
+#endif
 }
 
 void reset_adjust_variables(void)
@@ -191,8 +199,11 @@ void position_adjust(void)
 
   if (repos_last_time == 0) repos_last_time = millis();
   current_time = millis();
+  
+#ifdef VERBOSE_DEBUG
   Serial.print(F("repos_remaining_time : "));
   Serial.println(repos_remaining_time);
+#endif
   
   if (current_time - repos_last_time > repos_remaining_time) {
     repos_remaining_time = 0;
@@ -201,21 +212,23 @@ void position_adjust(void)
     repos_remaining_time -= current_time - repos_last_time;
     repos_last_time = current_time;
   }
-
+  
+#ifdef VERBOSE_DEBUG
   print_adjust_variables();
 
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
+#endif
   Serial.print(F("gyro_x : "));
   Serial.println(gyro_x);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("gyro_y : "));
   Serial.println(gyro_y);
-  
+#endif
+
   xPID.Compute();
   yPID.Compute();
   vPID.Compute();
-
-  Serial.println(velocity);
   
   set_servos();
 }
@@ -236,7 +249,7 @@ void getYPR(){
       mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
     }
 
-    gyro_x = ypr[2];
+    gyro_x = - ypr[2];
     gyro_y = ypr[1];
     accel_z = q.z;
 }
@@ -260,16 +273,16 @@ void process(void)
 {
   char command = Serial.read();
   Serial.println(command);
-  int param = 0.3;
+  int param = 0.1;
   if(command == 'p') {
     if (!did_take_off) {
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
-      adj_accel_z = -param;
+      adj_accel_z = 1.0;
       did_take_off = 1;
     } else {
       repos_remaining_time = MOVE_DURATION_MS;
-      adj_accel_z = -param;
+      adj_accel_z = 1.0;
     }
   } if (command == 'l') {
     repos_remaining_time = MOVE_DURATION_MS;
