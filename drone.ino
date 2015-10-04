@@ -26,8 +26,6 @@
 
 #define GYRO_READ_AVERAGE_COUNT  20
 
-double orig_accel_z;
-double orig_gyro_x, orig_gyro_y;
 double adj_accel_z;
 double adj_gyro_x, adj_gyro_y;
 double accel_z;
@@ -187,8 +185,6 @@ void print_adjust_variables()
   }
 }
 
-int first_sample = 1;
-
 void position_adjust(void)
 {
   unsigned long current_time;
@@ -207,16 +203,6 @@ void position_adjust(void)
   }
 
   print_adjust_variables();
-
- if (first_sample) {
-    orig_accel_z = accel_z;
-    orig_gyro_x = gyro_x;
-    orig_gyro_y = gyro_y;
-    first_sample = 0;
-    Serial.print(F("orig_accel_z : "));
-    Serial.println(
-    return;
-  }
 
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
@@ -250,9 +236,9 @@ void getYPR(){
       mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
     }
 
-    gyro_x = ypr[2] - orig_gyro_x;
-    gyro_y = ypr[1] - orig_gyro_y;
-    accel_z = q.z - orig_accel_z;;
+    gyro_x = ypr[2];
+    gyro_y = ypr[1];
+    accel_z = q.z;
 }
 
 void arm(int delay_req)
