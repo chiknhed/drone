@@ -28,6 +28,7 @@
 
 #define GYRO_READ_AVERAGE_COUNT  20
 
+double orig_gyro_x = 0, orig_gyro_y = 0;
 double adj_accel_z;
 double adj_gyro_x, adj_gyro_y;
 double accel_z;
@@ -39,9 +40,9 @@ unsigned long repos_remaining_time;
 double v_ac, v_bd, velocity;
 
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 1, 1, 0.7, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 1, 1, 0.7, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 5, 2, 1, DIRECT);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 1, 3, 1, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 1, 3, 1, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 2, 2, 0.7, DIRECT);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -193,6 +194,8 @@ void print_adjust_variables()
   }
 }
 
+int first_sample = 1;
+
 void position_adjust(void)
 {
   unsigned long current_time;
@@ -211,6 +214,13 @@ void position_adjust(void)
   } else {
     repos_remaining_time -= current_time - repos_last_time;
     repos_last_time = current_time;
+  }
+
+  if (first_sample) {
+    first_sample = 0;
+    orig_gyro_x = gyro_x;
+    orig_gyro_y = gyro_y;
+    return;
   }
   
 #ifdef VERBOSE_DEBUG
@@ -249,8 +259,8 @@ void getYPR(){
       mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
     }
 
-    gyro_x = - ypr[2];
-    gyro_y = ypr[1];
+    gyro_x = -orig_gyro_x - ypr[2];
+    gyro_y = ypr[1] - orig_gyro_y;
     accel_z = q.z;
 }
 
