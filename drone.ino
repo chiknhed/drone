@@ -1,7 +1,4 @@
 #include <Wire.h>
-#include <Bridge.h>
-#include <YunServer.h>
-#include <YunClient.h>
 #include <Servo.h>
 #include <PID_v1.h>
 #include <I2Cdev.h>
@@ -9,7 +6,7 @@
 #include <MPU6050_6Axis_MotionApps20.h>
 
 #define REPOSITION_PERIOD_MS  30ul
-#define MOVE_DURATION_MS      2000
+#define MOVE_DURATION_MS      1000
 
 #define ESC_MIN               22
 #define ESC_WORKING_MIN       70
@@ -18,8 +15,8 @@
   
 #define ESC_A 9
 #define ESC_B 8
-#define ESC_C 7
-#define ESC_D 6
+#define ESC_C 6
+#define ESC_D 5
 
 #define TAKEOFF_Z_ACCEL      100
 #define TAKEOFF_STEP_DELAY     500
@@ -30,7 +27,7 @@
 #define GYRO_READ_AVERAGE_COUNT  20
 
 double orig_accel_z;
-int orig_gyro_x, orig_gyro_y;
+double orig_gyro_x, orig_gyro_y;
 double adj_accel_z;
 double adj_gyro_x, adj_gyro_y;
 double accel_z;
@@ -41,11 +38,10 @@ unsigned long repos_remaining_time;
 
 double v_ac, v_bd, velocity;
 
-YunServer server;
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 0.001, 0.0001, 0.005, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 0.001, 0.0001, 0.005, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 0.001, 0.001, 0.005, DIRECT);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 1, 1, 1, REVERSE);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 1, 1, 1, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 20, 10, 1, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -67,9 +63,6 @@ int did_take_off = 0;
 void setup() {
   Serial.begin(115200);
 
-  Serial.println(F("initializing MPU6050"));
-  initMPU();
-
   Serial.println(F("initializing Motors")); 
   a.attach(ESC_A);
   b.attach(ESC_B);
@@ -79,14 +72,6 @@ void setup() {
   
   Serial.println(F("Arming Motors"));
   arm(0);
-
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
-  Bridge.begin();
-  digitalWrite(13, LOW);
-
-  server.listenOnLocalhost();
-  server.begin();
   
   Serial.println(F("initializing PID"));
   xPID.SetMode(AUTOMATIC);
@@ -95,14 +80,14 @@ void setup() {
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
   vPID.SetOutputLimits(ESC_WORKING_MIN, ESC_MAX);
+
+  Serial.println(F("initializing MPU6050"));
+  initMPU();
 }
 
 void loop() {
-  YunClient client = server.accept();
-
-  if (client) {
-    process(client);
-    client.stop();
+  if (Serial.available()) {
+    process();
   }
 
   while(!mpuInterrupt && fifoCount < packetSize){
@@ -113,11 +98,14 @@ void loop() {
       
   }
 
+  getYPR();
+  
   if(did_take_off)
     position_adjust();
 }
 
 void initMPU(){
+  int i;
   
   Wire.begin();
   mpu.initialize();
@@ -125,10 +113,9 @@ void initMPU(){
   if(devStatus == 0){
   
     mpu.setDMPEnabled(true);
-    attachInterrupt(0, dmpDataReady, RISING);
+    attachInterrupt(4, dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
-    
   }
 }
 
@@ -179,6 +166,7 @@ void reset_adjust_variables(void)
 {
   adj_accel_z = 0;
   adj_gyro_x = adj_gyro_y  = 0;
+  repos_last_time = millis();
 }
 
 void print_adjust_variables()
@@ -199,26 +187,36 @@ void print_adjust_variables()
   }
 }
 
+int first_sample = 1;
+
 void position_adjust(void)
 {
   unsigned long current_time;
 
   if (repos_last_time == 0) repos_last_time = millis();
   current_time = millis();
-  Serial.print(F("Current Time : "));
-  Serial.println(current_time);
+  Serial.print(F("repos_remaining_time : "));
+  Serial.println(repos_remaining_time);
   
   if (current_time - repos_last_time > repos_remaining_time) {
     repos_remaining_time = 0;
     reset_adjust_variables();
   } else {
     repos_remaining_time -= current_time - repos_last_time;
+    repos_last_time = current_time;
   }
 
   print_adjust_variables();
 
-  getYPR();
-  getAccel();
+ if (first_sample) {
+    orig_accel_z = accel_z;
+    orig_gyro_x = gyro_x;
+    orig_gyro_y = gyro_y;
+    first_sample = 0;
+    Serial.print(F("orig_accel_z : "));
+    Serial.println(
+    return;
+  }
 
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
@@ -252,20 +250,9 @@ void getYPR(){
       mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
     }
 
-    gyro_x = ypr[2];
-    gyro_y = ypr[1];
-}
-
-void getAccel(void) {
-  accel_z = mpu.getAccelerationY();
-}
-
-void printStatus(YunClient client)
-{
-  client.println(accel_z);
-  client.println(gyro_x);
-  client.println(gyro_y);
-  client.println();
+    gyro_x = ypr[2] - orig_gyro_x;
+    gyro_y = ypr[1] - orig_gyro_y;
+    accel_z = q.z - orig_accel_z;;
 }
 
 void arm(int delay_req)
@@ -283,14 +270,12 @@ void arm(int delay_req)
     delay(ESC_ARM_DELAY);
 }
 
-void process(YunClient client)
+void process(void)
 {
-  String command = client.readStringUntil('/');
+  char command = Serial.read();
   Serial.println(command);
-  
-  int param = client.parseInt();
-  Serial.println(param);
-  if(command == "up") {
+  int param = 0.3;
+  if(command == 'p') {
     if (!did_take_off) {
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
@@ -300,26 +285,26 @@ void process(YunClient client)
       repos_remaining_time = MOVE_DURATION_MS;
       adj_accel_z = -param;
     }
-  } if (command == "down") {
+  } if (command == 'l') {
     repos_remaining_time = MOVE_DURATION_MS;
     adj_accel_z = -param;
-  }else if (command == "forward") {
+  }else if (command == 'w') {
     repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = -param;
     adj_gyro_y = -param;
-  } else if (command == "backward") {
+  } else if (command == 's') {
     repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = param;
     adj_gyro_y = param;
-  } else if (command == "left") {
+  } else if (command == 'a') {
     repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = -param;
     adj_gyro_y = param;
-  } else if (command == "right") {
+  } else if (command == 'd') {
     repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = param;
     adj_gyro_y = -param;
-  } else if (command == "emg") {
+  } else if (command == 'x') {
     repos_remaining_time = 0;
     did_take_off = 0;
     reset_adjust_variables();
