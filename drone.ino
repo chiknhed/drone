@@ -7,10 +7,10 @@
 
 //#define VERBOSE_DEBUG
 
-#define PRESAMPLE_COUNT     2000
+#define PRESAMPLE_COUNT     3000
 
 #define REPOSITION_PERIOD_MS  30ul
-#define MOVE_DURATION_MS      1000
+#define MOVE_DURATION_MS      2000
 
 #define ESC_MIN               22
 #define ESC_WORKING_MIN       75
@@ -22,14 +22,14 @@
 #define ESC_C 6
 #define ESC_D 5
 
-#define TAKEOFF_Z_ACCEL       -0.1
+#define TAKEOFF_Z_ACCEL       -0.01
 #define TAKEOFF_THROTTLE_STEP 0.05
-#define TAKEOFF_GOUP_DELAY    5000
+#define TAKEOFF_GOUP_DELAY    3000
 
 #define PID_XY_INFLUENCE    20.0
 #define PID_THROTTLE_INFLUENCE  30.0
 
-#define UPDOWN_MULT_FACTOR  -0.3
+#define UPDOWN_MULT_FACTOR  -2.0
 
 double orig_accel_z = 0;
 double orig_gyro_x = 0, orig_gyro_y = 0;
@@ -49,9 +49,9 @@ double v_ac, v_bd, velocity;
 int presample_count  = PRESAMPLE_COUNT;
 
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 1, 0.5, 0.7, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 1, 0.5, 0.7, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 300, 0, 5, REVERSE);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 3, 5, 2, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 3, 5, 2, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 10, 1, 1, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -94,6 +94,8 @@ void setup() {
 
   Serial.println(F("initializing MPU6050"));
   initMPU();
+
+  pinMode(13, OUTPUT);
 }
 
 void loop() {
@@ -113,8 +115,9 @@ void loop() {
 
   if (presample_count > 0) {
     presample_count --;
-    if (presample_count % 100 == 0)
-      Serial.println(presample_count / 100);
+    if (presample_count % 100 == 0) Serial.println(presample_count / 100);
+    if (presample_count % 100 == 1) digitalWrite(13, LOW);
+    if (presample_count % 100 == 50) digitalWrite(13, HIGH);
   } else if (presample_count == 0) {
     presample_count --;
     orig_gyro_x = gyro_x;
@@ -169,15 +172,14 @@ void set_servos(void)
   b.write(vb);
   c.write(vc);
   d.write(vd);
-#ifdef VERBOSE_DEBUG
+  
   Serial.print(F("v_ac : "));
   Serial.println(v_ac);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("v_bd : "));
   Serial.println(v_bd);
-#endif
   Serial.print(F("velocity : "));
-  Serial.println(velocity + hover_throttle);
-#ifdef VERBOSE_DEBUG
+  Serial.println(velocity);
   Serial.print(F("va : "));
   Serial.println(va);
   Serial.print(F("vb : "));
@@ -246,12 +248,12 @@ void position_adjust(void)
   
 #ifdef VERBOSE_DEBUG
   print_adjust_variables();
-#endif
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
-#ifdef VERBOSE_DEBUG
+#endif
   Serial.print(F("gyro_x : "));
   Serial.println(gyro_x);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("gyro_y : "));
   Serial.println(gyro_y);
 #endif
@@ -311,6 +313,20 @@ void process(void)
     Serial.println(F("not ready.."));
     return;
   }
+  
+  if (command == 'x') {
+    repos_remaining_time = 0;
+    did_takeoff = 0;
+    doing_takeoff = 0;
+    reset_adjust_variables();
+    arm(1);
+  }
+
+  if (doing_takeoff) {
+    Serial.println(F("doing take off"));
+    return;
+  }
+  
   double param = 0.1;
   if(command == 'p') {
     if (!did_takeoff) {
@@ -344,11 +360,5 @@ void process(void)
     repos_remaining_time = MOVE_DURATION_MS;
     adj_gyro_x = param;
     adj_gyro_y = -param;
-  } else if (command == 'x') {
-    repos_remaining_time = 0;
-    did_takeoff = 0;
-    doing_takeoff = 0;
-    reset_adjust_variables();
-    arm(1);
   }
 }
