@@ -36,6 +36,12 @@ THE SOFTWARE.
 
 #include "MPU6050.h"
 
+#include <Arduino.h>
+#include <Bridge.h>
+#include <FileIO.h>
+
+#define MPU6050_DMP_CODE_SIZE       1929    // dmpMemory[]
+
 /** Default constructor, uses default I2C address.
  * @see MPU6050_DEFAULT_ADDRESS
  */
@@ -2964,7 +2970,7 @@ void MPU6050::readMemoryBlock(uint8_t *data, uint16_t dataSize, uint8_t bank, ui
     }
 }
 bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify, bool useProgMem) {
-    setMemoryBank(bank);
+	setMemoryBank(bank);
     setMemoryStartAddress(address);
     uint8_t chunkSize;
     uint8_t *verifyBuffer;
@@ -2972,7 +2978,10 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
     uint16_t i;
     uint8_t j;
     if (verify) verifyBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
-    if (useProgMem) progBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
+    progBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
+	
+	File file = FileSystem.open("/mnt/sda1/dmpMemory.dat", FILE_READ);
+		
     for (i = 0; i < dataSize;) {
         // determine correct chunk size according to bank position and data size
         chunkSize = MPU6050_DMP_MEMORY_CHUNK_SIZE;
@@ -2983,10 +2992,11 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
         // make sure this chunk doesn't go past the bank boundary (256 bytes)
         if (chunkSize > 256 - address) chunkSize = 256 - address;
         
-        if (useProgMem) {
-            // write the chunk of data as specified
-            for (j = 0; j < chunkSize; j++) progBuffer[j] = pgm_read_byte(data + i + j);
-        } else {
+        if (data == 0) {
+			for (j = 0; j < chunkSize; j++) {
+				progBuffer[j] = file.read();
+			}
+		} else {
             // write the chunk of data as specified
             progBuffer = (uint8_t *)data + i;
         }
@@ -3017,7 +3027,7 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
                 }
                 Serial.print("\n");*/
                 free(verifyBuffer);
-                if (useProgMem) free(progBuffer);
+                free(progBuffer);
                 return false; // uh oh.
             }
         }
@@ -3037,31 +3047,33 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
     }
     if (verify) free(verifyBuffer);
     if (useProgMem) free(progBuffer);
+	file.close();
     return true;
 }
 bool MPU6050::writeProgMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify) {
     return writeMemoryBlock(data, dataSize, bank, address, verify, true);
 }
-bool MPU6050::writeDMPConfigurationSet(const uint8_t *data, uint16_t dataSize, bool useProgMem) {
+bool MPU6050::writeDMPConfigurationSet(const uint8_t *datano, uint16_t dataSize, bool useProgMem) {
     uint8_t *progBuffer, success, special;
     uint16_t i, j;
-    if (useProgMem) {
-        progBuffer = (uint8_t *)malloc(8); // assume 8-byte blocks, realloc later if necessary
-    }
+    progBuffer = (uint8_t *)malloc(8); // assume 8-byte blocks, realloc later if necessary
+    
+	File file = FileSystem.open("/mnt/sda1/dmpConfig.dat", FILE_READ);
+	if (!file)
+		return false;
 
     // config set data is a long string of blocks with the following structure:
     // [bank] [offset] [length] [byte[0], byte[1], ..., byte[length]]
     uint8_t bank, offset, length;
-    for (i = 0; i < dataSize;) {
-        if (useProgMem) {
-            bank = pgm_read_byte(data + i++);
-            offset = pgm_read_byte(data + i++);
-            length = pgm_read_byte(data + i++);
-        } else {
-            bank = data[i++];
-            offset = data[i++];
-            length = data[i++];
-        }
+    while(true) {
+		bank = file.read();
+		offset = file.read();
+		length = file.read();
+		Serial.println(bank, HEX);
+		Serial.println(offset, HEX);
+		Serial.println(length, HEX);
+		
+		if (bank == 0xff || offset == 0xff || length == 0xff) break;
 
         // write data or perform special action
         if (length > 0) {
@@ -3072,12 +3084,8 @@ bool MPU6050::writeDMPConfigurationSet(const uint8_t *data, uint16_t dataSize, b
             Serial.print(offset);
             Serial.print(", length=");
             Serial.println(length);*/
-            if (useProgMem) {
-                if (sizeof(progBuffer) < length) progBuffer = (uint8_t *)realloc(progBuffer, length);
-                for (j = 0; j < length; j++) progBuffer[j] = pgm_read_byte(data + i + j);
-            } else {
-                progBuffer = (uint8_t *)data + i;
-            }
+			if (sizeof(progBuffer) < length) progBuffer = (uint8_t *)realloc(progBuffer, length);
+			for (j = 0; j < length; j++) progBuffer[j] = file.read();
             success = writeMemoryBlock(progBuffer, length, bank, offset, true);
             i += length;
         } else {
@@ -3086,11 +3094,8 @@ bool MPU6050::writeDMPConfigurationSet(const uint8_t *data, uint16_t dataSize, b
             // is totally undocumented. This code is in here based on observed
             // behavior only, and exactly why (or even whether) it has to be here
             // is anybody's guess for now.
-            if (useProgMem) {
-                special = pgm_read_byte(data + i++);
-            } else {
-                special = data[i++];
-            }
+			special = file.read();
+			
             /*Serial.print("Special command code ");
             Serial.print(special, HEX);
             Serial.println(" found...");*/
@@ -3110,11 +3115,11 @@ bool MPU6050::writeDMPConfigurationSet(const uint8_t *data, uint16_t dataSize, b
         }
         
         if (!success) {
-            if (useProgMem) free(progBuffer);
+            free(progBuffer);
             return false; // uh oh
         }
     }
-    if (useProgMem) free(progBuffer);
+    free(progBuffer);
     return true;
 }
 bool MPU6050::writeProgDMPConfigurationSet(const uint8_t *data, uint16_t dataSize) {

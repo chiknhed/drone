@@ -4,6 +4,8 @@
 #include <I2Cdev.h>
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
+#include <Console.h>
+#include <FileIO.h>
 
 //#define VERBOSE_DEBUG
 
@@ -74,17 +76,21 @@ int doing_takeoff = 0;
 void setup() {
   Serial.begin(115200);
 
-  Serial.println(F("initializing Motors")); 
   a.attach(ESC_A);
   b.attach(ESC_B);
   c.attach(ESC_C);
   d.attach(ESC_D);
   delay(100);
   
-  Serial.println(F("Arming Motors"));
   arm(0);
+
+  pinMode(13, OUTPUT);
+  digitalWrite(13, HIGH);
+  Bridge.begin();
+  Console.begin();
+  FileSystem.begin();
+  digitalWrite(13, LOW);
   
-  Serial.println(F("initializing PID"));
   xPID.SetMode(AUTOMATIC);
   xPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   yPID.SetMode(AUTOMATIC);
@@ -92,14 +98,11 @@ void setup() {
   vPID.SetMode(AUTOMATIC);
   vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
 
-  Serial.println(F("initializing MPU6050"));
   initMPU();
-
-  pinMode(13, OUTPUT);
 }
 
 void loop() {
-  if (Serial.available()) {
+  if (Console.available()) {
     process();
   }
 
@@ -115,7 +118,7 @@ void loop() {
 
   if (presample_count > 0) {
     presample_count --;
-    if (presample_count % 100 == 0) Serial.println(presample_count / 100);
+    if (presample_count % 100 == 0) Console.println(presample_count / 100);
     if (presample_count % 100 == 1) digitalWrite(13, LOW);
     if (presample_count % 100 == 50) digitalWrite(13, HIGH);
   } else if (presample_count == 0) {
@@ -123,7 +126,7 @@ void loop() {
     orig_gyro_x = gyro_x;
     orig_gyro_y = gyro_y;
     orig_accel_z = accel_z;
-    Serial.println(F("Ready to take off"));
+    Console.println("Ready..");
   }
   
   if(did_takeoff || doing_takeoff)
@@ -137,11 +140,13 @@ void initMPU(){
   mpu.initialize();
   devStatus = mpu.dmpInitialize();
   if(devStatus == 0){
-  
     mpu.setDMPEnabled(true);
     attachInterrupt(4, dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
+  } else {
+    Serial.println("MPU init failed");
+    digitalWrite(13, 1);
   }
 }
 
@@ -153,10 +158,10 @@ void set_servos(void)
 {
   double va, vb, vc, vd;
   
-  va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0);
-  vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0);
-  vc = (hover_throttle + velocity) * (abs(-100.0 + v_ac)/100.0);
-  vd = (hover_throttle + velocity) * (abs(-100.0 + v_bd)/100.0);
+  va = (hover_throttle + velocity) + v_ac;
+  vb = (hover_throttle + velocity) + v_bd;
+  vc = (hover_throttle + velocity) - v_ac;
+  vd = (hover_throttle + velocity) - v_bd;
 
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
@@ -172,24 +177,24 @@ void set_servos(void)
   b.write(vb);
   c.write(vc);
   d.write(vd);
-  
-  Serial.print(F("v_ac : "));
+
+  Serial.print("v_ac : ");
   Serial.println(v_ac);
 #ifdef VERBOSE_DEBUG
-  Serial.print(F("v_bd : "));
+  Serial.print("v_bd : ");
   Serial.println(v_bd);
-  Serial.print(F("velocity : "));
+  Serial.print("velocity : ");
   Serial.println(velocity);
-  Serial.print(F("va : "));
+  Serial.print("va : ");
   Serial.println(va);
-  Serial.print(F("vb : "));
+  Serial.print("vb : ");
   Serial.println(vb);
-  Serial.print(F("vc : "));
+  Serial.print("vc : ");
   Serial.println(vc);
-  Serial.print(F("vd : "));
+  Serial.print("vd : ");
   Serial.println(vd);
-#endif
   Serial.println();
+#endif
 }
 
 void reset_adjust_variables(void)
@@ -197,24 +202,6 @@ void reset_adjust_variables(void)
   adj_accel_z = 0;
   adj_gyro_x = adj_gyro_y  = 0;
   repos_last_time = millis();
-}
-
-void print_adjust_variables()
-{
-  if (adj_accel_z) {
-    Serial.print(F("adj_accel_z : "));
-    Serial.println(adj_accel_z);
-  }
-
-  if (adj_gyro_x) {
-    Serial.print(F("adj_gyro_x : "));
-    Serial.println(adj_gyro_x);
-  }
-
-  if (adj_gyro_y) {
-    Serial.print(F("adj_gyro_y : "));
-    Serial.println(adj_gyro_y);
-  }
 }
 
 void position_adjust(void)
@@ -226,17 +213,12 @@ void position_adjust(void)
     doing_takeoff = 0;
     did_takeoff = 1;
     hover_throttle -= TAKEOFF_THROTTLE_STEP;
-    Serial.print(F("Hover found :"));
+    Serial.print("Hover found :");
     Serial.println(hover_throttle);
   }
 
   if (repos_last_time == 0) repos_last_time = millis();
   current_time = millis();
-  
-#ifdef VERBOSE_DEBUG
-  Serial.print(F("repos_remaining_time : "));
-  Serial.println(repos_remaining_time);
-#endif
   
   if (current_time - repos_last_time > repos_remaining_time) {
     repos_remaining_time = 0;
@@ -247,14 +229,13 @@ void position_adjust(void)
   }
   
 #ifdef VERBOSE_DEBUG
-  print_adjust_variables();
-  Serial.print(F("accel_z : "));
+  Serial.print("accel_z : ");
   Serial.println(accel_z);
 #endif
-  Serial.print(F("gyro_x : "));
+  Serial.print("gyro_x : ");
   Serial.println(gyro_x);
 #ifdef VERBOSE_DEBUG
-  Serial.print(F("gyro_y : "));
+  Serial.print("gyro_y : ");
   Serial.println(gyro_y);
 #endif
 
@@ -307,10 +288,10 @@ void arm(int delay_req)
 
 void process(void)
 {
-  char command = Serial.read();
-  Serial.println(command);
+  char command = Console.read();
+  Console.println(command);
   if (presample_count > 0) {
-    Serial.println(F("not ready.."));
+    Console.println("not ready..");
     return;
   }
   
@@ -323,7 +304,7 @@ void process(void)
   }
 
   if (doing_takeoff) {
-    Serial.println(F("doing take off"));
+    Console.println("doing take off");
     return;
   }
   
