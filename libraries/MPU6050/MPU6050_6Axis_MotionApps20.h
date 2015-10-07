@@ -86,15 +86,13 @@ THE SOFTWARE.
  |  24  25  26  27  28  29  30  31  32  33  34  35  36  37  38  39  40  41                          |
  * ================================================================================================ */
 
-void MPU6050::dmpInitHelper(File * pFile, uint8_t * dmpUpdate, uint16_t * pos) {
+void MPU6050::dmpInitHelper(File * pFile, uint8_t * dmpUpdate, bool isWrite) {
 	int j;
-	for (j = 0; j < 4 || j < dmpUpdate[2] + 3; j++, *pos++) {
-		pFile->seek(*pos);
+	for (j = 0; j < 4 || j < dmpUpdate[2] + 3; j++) {
 		dmpUpdate[j] = pFile->read();
-		Serial.print("U 0x");
-		Serial.println(dmpUpdate[j], HEX);
 	}
-	writeMemoryBlock(dmpUpdate + 3, dmpUpdate[2], dmpUpdate[0], dmpUpdate[1]);
+	if (isWrite)
+		writeMemoryBlock(dmpUpdate + 3, dmpUpdate[2], dmpUpdate[0], dmpUpdate[1]);
 }
 
 uint8_t MPU6050::dmpInitialize() {
@@ -205,12 +203,12 @@ uint8_t MPU6050::dmpInitialize() {
 
             DEBUG_PRINTLN(F("Writing final memory update 1/7 (function unknown)..."));
             uint8_t dmpUpdate[16], j;
-            uint16_t pos = 0;
-			File file = FileSystem.open("/mnt/sda1/dmpUpdate.dat", FILE_READ);
-            dmpInitHelper(&file, dmpUpdate, &pos);
+			File file = FileSystem.open("/drone/dmpUpdates.dat", FILE_READ);
+			if (!file) return false;
+            dmpInitHelper(&file, dmpUpdate);
 
             DEBUG_PRINTLN(F("Writing final memory update 2/7 (function unknown)..."));
-            dmpInitHelper(&file, dmpUpdate, &pos);
+            dmpInitHelper(&file, dmpUpdate);
 
             DEBUG_PRINTLN(F("Resetting FIFO..."));
             resetFIFO();
@@ -248,13 +246,13 @@ uint8_t MPU6050::dmpInitialize() {
             resetDMP();
 
             DEBUG_PRINTLN(F("Writing final memory update 3/7 (function unknown)..."));
-            dmpInitHelper(&file, dmpUpdate, &pos);
+            dmpInitHelper(&file, dmpUpdate);
 
             DEBUG_PRINTLN(F("Writing final memory update 4/7 (function unknown)..."));
-            dmpInitHelper(&file, dmpUpdate, &pos);
+            dmpInitHelper(&file, dmpUpdate);
 
             DEBUG_PRINTLN(F("Writing final memory update 5/7 (function unknown)..."));
-            dmpInitHelper(&file, dmpUpdate, &pos);
+            dmpInitHelper(&file, dmpUpdate);
 			
 
             DEBUG_PRINTLN(F("Waiting for FIFO count > 2..."));
@@ -272,7 +270,7 @@ uint8_t MPU6050::dmpInitialize() {
             DEBUG_PRINTLNF(mpuIntStatus, HEX);
 
             DEBUG_PRINTLN(F("Reading final memory update 6/7 (function unknown)..."));
-            dmpInitHelper(&file, dmpUpdate, &pos);
+            dmpInitHelper(&file, dmpUpdate, false);
             readMemoryBlock(dmpUpdate + 3, dmpUpdate[2], dmpUpdate[0], dmpUpdate[1]);
 
 			file.close();
@@ -293,7 +291,7 @@ uint8_t MPU6050::dmpInitialize() {
             DEBUG_PRINTLNF(mpuIntStatus, HEX);
 
             DEBUG_PRINTLN(F("Writing final memory update 7/7 (function unknown)..."));
-            dmpInitHelper(&file, dmpUpdate, &pos);
+            dmpInitHelper(&file, dmpUpdate);
             DEBUG_PRINTLN(F("DMP is good to go! Finally."));
 
             DEBUG_PRINTLN(F("Disabling DMP (you turn it on later)..."));

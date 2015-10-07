@@ -21,17 +21,18 @@
   
 #define ESC_A 9
 #define ESC_B 8
+
 #define ESC_C 6
 #define ESC_D 5
 
-#define TAKEOFF_Z_ACCEL       -0.01
-#define TAKEOFF_THROTTLE_STEP 0.05
+#define TAKEOFF_Z_ACCEL       -0.05
+#define TAKEOFF_THROTTLE_STEP 0.03
 #define TAKEOFF_GOUP_DELAY    3000
 
 #define PID_XY_INFLUENCE    20.0
 #define PID_THROTTLE_INFLUENCE  30.0
 
-#define UPDOWN_MULT_FACTOR  -2.0
+#define UPDOWN_MULT_FACTOR  -0.8
 
 double orig_accel_z = 0;
 double orig_gyro_x = 0, orig_gyro_y = 0;
@@ -53,7 +54,7 @@ int presample_count  = PRESAMPLE_COUNT;
 Servo a, b, c, d;
 PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 3, 5, 2, DIRECT);
 PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 3, 5, 2, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 10, 1, 1, REVERSE);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 3, 1, 1, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -62,7 +63,7 @@ float ypr[3] = {0.0f,0.0f,0.0f};       // yaw pitch roll values
 float yprLast[3] = {0.0f, 0.0f, 0.0f};
 
 uint8_t mpuIntStatus;                  // mpu statusbyte
-uint8_t devStatus;                     // device status    
+uint8_t in_error;                     // device status    
 uint16_t packetSize;                   // estimated packet size  
 uint16_t fifoCount;                    // fifo buffer size   
 uint8_t fifoBuffer[64];                // fifo buffer 
@@ -129,7 +130,7 @@ void loop() {
     Console.println("Ready..");
   }
   
-  if(did_takeoff || doing_takeoff)
+  if((did_takeoff || doing_takeoff) && !in_error)
     position_adjust();
 }
 
@@ -138,14 +139,14 @@ void initMPU(){
   
   Wire.begin();
   mpu.initialize();
-  devStatus = mpu.dmpInitialize();
-  if(devStatus == 0){
+  in_error = mpu.dmpInitialize();
+  if(in_error == 0){
     mpu.setDMPEnabled(true);
     attachInterrupt(4, dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
   } else {
-    Serial.println("MPU init failed");
+    Serial.println(F("MPU init failed"));
     digitalWrite(13, 1);
   }
 }
@@ -178,20 +179,20 @@ void set_servos(void)
   c.write(vc);
   d.write(vd);
 
-  Serial.print("v_ac : ");
-  Serial.println(v_ac);
-#ifdef VERBOSE_DEBUG
-  Serial.print("v_bd : ");
-  Serial.println(v_bd);
-  Serial.print("velocity : ");
+  Serial.print(F("velocity : "));
   Serial.println(velocity);
-  Serial.print("va : ");
+#ifdef VERBOSE_DEBUG
+  Serial.print(F("v_ac : "));
+  Serial.println(v_ac);
+  Serial.print(F("v_bd : "));
+  Serial.println(v_bd);
+  Serial.print(F("va : "));
   Serial.println(va);
-  Serial.print("vb : ");
+  Serial.print(F("vb : "));
   Serial.println(vb);
-  Serial.print("vc : ");
+  Serial.print(F("vc : "));
   Serial.println(vc);
-  Serial.print("vd : ");
+  Serial.print(F("vd : "));
   Serial.println(vd);
   Serial.println();
 #endif
@@ -212,9 +213,8 @@ void position_adjust(void)
     hover_found = 1;
     doing_takeoff = 0;
     did_takeoff = 1;
-    hover_throttle -= TAKEOFF_THROTTLE_STEP;
-    Serial.print("Hover found :");
-    Serial.println(hover_throttle);
+    Console.print(F("Hover found :"));
+    Console.println(hover_throttle);
   }
 
   if (repos_last_time == 0) repos_last_time = millis();
@@ -228,20 +228,19 @@ void position_adjust(void)
     repos_last_time = current_time;
   }
   
-#ifdef VERBOSE_DEBUG
-  Serial.print("accel_z : ");
+
+  Serial.print(F("accel_z : "));
   Serial.println(accel_z);
-#endif
-  Serial.print("gyro_x : ");
-  Serial.println(gyro_x);
 #ifdef VERBOSE_DEBUG
-  Serial.print("gyro_y : ");
+  Serial.print(F("gyro_x : "));
+  Serial.println(gyro_x);
+  Serial.print(F("gyro_y : "));
   Serial.println(gyro_y);
 #endif
 
-  xPID.Compute();
-  yPID.Compute();
   if (hover_found) {
+    xPID.Compute();
+    yPID.Compute();
     vPID.Compute();
   } else {
     hover_throttle += TAKEOFF_THROTTLE_STEP;
@@ -291,7 +290,7 @@ void process(void)
   char command = Console.read();
   Console.println(command);
   if (presample_count > 0) {
-    Console.println("not ready..");
+    Console.println(F("not ready.."));
     return;
   }
   
@@ -304,7 +303,7 @@ void process(void)
   }
 
   if (doing_takeoff) {
-    Console.println("doing take off");
+    Console.println(F("doing take off"));
     return;
   }
   

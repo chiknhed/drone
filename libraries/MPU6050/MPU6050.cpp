@@ -2969,7 +2969,7 @@ void MPU6050::readMemoryBlock(uint8_t *data, uint16_t dataSize, uint8_t bank, ui
         }
     }
 }
-bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify, bool useProgMem) {
+bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify, bool useFile) {
 	setMemoryBank(bank);
     setMemoryStartAddress(address);
     uint8_t chunkSize;
@@ -2978,9 +2978,10 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
     uint16_t i;
     uint8_t j;
     if (verify) verifyBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
-    progBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
-	
-	File file = FileSystem.open("/mnt/sda1/dmpMemory.dat", FILE_READ);
+    if (useFile) progBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
+	File *pFile;
+
+	if (useFile) pFile = (File *) data;
 		
     for (i = 0; i < dataSize;) {
         // determine correct chunk size according to bank position and data size
@@ -2992,9 +2993,9 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
         // make sure this chunk doesn't go past the bank boundary (256 bytes)
         if (chunkSize > 256 - address) chunkSize = 256 - address;
         
-        if (data == 0) {
+        if (useFile) {
 			for (j = 0; j < chunkSize; j++) {
-				progBuffer[j] = file.read();
+				progBuffer[j] = pFile->read();
 			}
 		} else {
             // write the chunk of data as specified
@@ -3046,19 +3047,25 @@ bool MPU6050::writeMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t b
         }
     }
     if (verify) free(verifyBuffer);
-    if (useProgMem) free(progBuffer);
-	file.close();
+    if (useFile) free(progBuffer);
     return true;
 }
 bool MPU6050::writeProgMemoryBlock(const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify) {
-    return writeMemoryBlock(data, dataSize, bank, address, verify, true);
+	bool res;
+	File file = FileSystem.open("/drone/dmpMemory.dat", FILE_READ);
+	if (!file)
+		return false;
+    res = writeMemoryBlock((uint8_t*) &file, dataSize, bank, address, verify, true);
+	file.close();
+	
+	return res;
 }
 bool MPU6050::writeDMPConfigurationSet(const uint8_t *datano, uint16_t dataSize, bool useProgMem) {
     uint8_t *progBuffer, success, special;
     uint16_t i, j;
     progBuffer = (uint8_t *)malloc(8); // assume 8-byte blocks, realloc later if necessary
     
-	File file = FileSystem.open("/mnt/sda1/dmpConfig.dat", FILE_READ);
+	File file = FileSystem.open("/drone/dmpConfig.dat", FILE_READ);
 	if (!file)
 		return false;
 
@@ -3069,11 +3076,8 @@ bool MPU6050::writeDMPConfigurationSet(const uint8_t *datano, uint16_t dataSize,
 		bank = file.read();
 		offset = file.read();
 		length = file.read();
-		Serial.println(bank, HEX);
-		Serial.println(offset, HEX);
-		Serial.println(length, HEX);
 		
-		if (bank == 0xff || offset == 0xff || length == 0xff) break;
+		if (bank == 0xff && offset == 0xff && length == 0xff) break;
 
         // write data or perform special action
         if (length > 0) {

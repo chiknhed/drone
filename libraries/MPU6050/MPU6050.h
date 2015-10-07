@@ -784,7 +784,7 @@ class MPU6050 {
 
             uint8_t dmpInitialize();
             bool dmpPacketAvailable();
-			void dmpInitHelper(File * pFile, uint8_t * dmpUpdate, uint16_t * pos);
+			void dmpInitHelper(File * pFile, uint8_t * dmpUpdate, bool isWrite = true);
 
             uint8_t dmpSetFIFORate(uint8_t fifoRate);
             uint8_t dmpGetFIFORate();
