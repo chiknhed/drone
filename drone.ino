@@ -9,7 +9,9 @@
 
 //#define VERBOSE_DEBUG
 
-#define PRESAMPLE_COUNT     3000
+#define PRESAMPLE_COUNT     1500
+#define PRESAMPLE_STABLE_CHECK  30
+#define PRESAMPLE_STABLE_TOLERANCE  0.02
 
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      2000
@@ -25,21 +27,22 @@
 #define ESC_C 6
 #define ESC_D 5
 
-#define TAKEOFF_Z_ACCEL       -0.05
+#define TAKEOFF_Z_ACCEL       (-0.05)
 #define TAKEOFF_THROTTLE_STEP 0.03
 #define TAKEOFF_GOUP_DELAY    3000
 
 #define PID_XY_INFLUENCE    20.0
 #define PID_THROTTLE_INFLUENCE  30.0
 
-#define UPDOWN_MULT_FACTOR  -0.8
+#define UPDOWN_MULT_FACTOR  (-2.0)
+
+#define ACCEL_FILTER_MAX         0.5
+#define ACCEL_FILTER_MIN         -0.5
 
 double orig_accel_z = 0;
 double orig_gyro_x = 0, orig_gyro_y = 0;
-double adj_accel_z;
-double adj_gyro_x, adj_gyro_y;
-double accel_z;
-double gyro_x, gyro_y;
+double adj_accel_z, adj_gyro_x, adj_gyro_y;
+double accel_z, gyro_x, gyro_y;
 
 double hover_throttle = ESC_WORKING_MIN;
 int hover_found = 0;
@@ -52,13 +55,14 @@ double v_ac, v_bd, velocity;
 int presample_count  = PRESAMPLE_COUNT;
 
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 3, 5, 2, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 3, 5, 2, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 3, 1, 1, REVERSE);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 2, 0.7, 2, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 2, 0.7, 2, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 3, 20, 2, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
 VectorFloat gravity;                   // gravity vector for ypr
+int16_t accel_data[3];
 float ypr[3] = {0.0f,0.0f,0.0f};       // yaw pitch roll values
 float yprLast[3] = {0.0f, 0.0f, 0.0f};
 
@@ -72,7 +76,6 @@ volatile bool mpuInterrupt = false;    //interrupt flag
 
 int did_takeoff = 0;
 int doing_takeoff = 0;
-
 
 void setup() {
   Serial.begin(115200);
@@ -114,24 +117,48 @@ void loop() {
      */
       
   }
-
   getYPR();
 
-  if (presample_count > 0) {
+  if (presample_count > PRESAMPLE_STABLE_CHECK) {
     presample_count --;
-    if (presample_count % 100 == 0) Console.println(presample_count / 100);
-    if (presample_count % 100 == 1) digitalWrite(13, LOW);
-    if (presample_count % 100 == 50) digitalWrite(13, HIGH);
-  } else if (presample_count == 0) {
+    if (presample_count % 100 == 0) Serial.println(presample_count / 100);
+    if (presample_count % 100 == 50) digitalWrite(13, LOW);
+    if (presample_count % 100 == 1) digitalWrite(13, HIGH);
+  } else if (presample_count == PRESAMPLE_STABLE_CHECK) {
     presample_count --;
     orig_gyro_x = gyro_x;
     orig_gyro_y = gyro_y;
     orig_accel_z = accel_z;
-    Console.println("Ready..");
+    Serial.println(F("R."));
+  } else if (presample_count < PRESAMPLE_STABLE_CHECK && presample_count >= 0) {
+    presample_count --;
+    if (gyro_x > PRESAMPLE_STABLE_TOLERANCE || gyro_x < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
+    if (gyro_y > PRESAMPLE_STABLE_TOLERANCE || gyro_y < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
+    if (accel_z > PRESAMPLE_STABLE_TOLERANCE || accel_z < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
+
+    if (in_error) {
+      Serial.println(F("Sensor unstable.."));
+      digitalWrite(13, HIGH);
+    }
   }
   
   if((did_takeoff || doing_takeoff) && !in_error)
     position_adjust();
+}
+
+void print_sensors(void) {
+  Serial.print(F("t : "));
+  Serial.println(millis());
+#ifdef VERBOSE_DEBUG
+  Serial.print(F("accel_z : "));
+  Serial.println(accel_z);
+#endif
+  Serial.print(F("gyro_x : "));
+  Serial.println(gyro_x);
+#ifdef VERBOSE_DEBUG
+  Serial.print(F("gyro_y : "));
+  Serial.println(gyro_y);
+#endif
 }
 
 void initMPU(){
@@ -157,12 +184,12 @@ inline void dmpDataReady() {
 
 void set_servos(void)
 {
-  double va, vb, vc, vd;
+  int va, vb, vc, vd;
   
-  va = (hover_throttle + velocity) + v_ac;
-  vb = (hover_throttle + velocity) + v_bd;
-  vc = (hover_throttle + velocity) - v_ac;
-  vd = (hover_throttle + velocity) - v_bd;
+  va = hover_throttle + velocity + v_ac + 0.5;
+  vb = hover_throttle + velocity + v_bd + 0.5;
+  vc = hover_throttle + velocity - v_ac + 0.5;
+  vd = hover_throttle + velocity - v_bd + 0.5;
 
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
@@ -179,11 +206,13 @@ void set_servos(void)
   c.write(vc);
   d.write(vd);
 
+#ifdef VERBOSE_DEBUG
   Serial.print(F("velocity : "));
   Serial.println(velocity);
-#ifdef VERBOSE_DEBUG
+#endif
   Serial.print(F("v_ac : "));
   Serial.println(v_ac);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("v_bd : "));
   Serial.println(v_bd);
   Serial.print(F("va : "));
@@ -213,8 +242,8 @@ void position_adjust(void)
     hover_found = 1;
     doing_takeoff = 0;
     did_takeoff = 1;
-    Console.print(F("Hover found :"));
-    Console.println(hover_throttle);
+    Serial.print(F("Hover found :"));
+    Serial.println(hover_throttle);
   }
 
   if (repos_last_time == 0) repos_last_time = millis();
@@ -228,16 +257,6 @@ void position_adjust(void)
     repos_last_time = current_time;
   }
   
-
-  Serial.print(F("accel_z : "));
-  Serial.println(accel_z);
-#ifdef VERBOSE_DEBUG
-  Serial.print(F("gyro_x : "));
-  Serial.println(gyro_x);
-  Serial.print(F("gyro_y : "));
-  Serial.println(gyro_y);
-#endif
-
   if (hover_found) {
     xPID.Compute();
     yPID.Compute();
@@ -247,27 +266,35 @@ void position_adjust(void)
   }
   
   set_servos();
+
+  print_sensors();
 }
 
 void getYPR(){
-    mpuInterrupt = false;
-    mpuIntStatus = mpu.getIntStatus();
-    fifoCount = mpu.getFIFOCount();
-    
-    if((mpuIntStatus & 0x10) || fifoCount >= 1024){ 
-      mpu.resetFIFO(); 
-    }else if(mpuIntStatus & 0x02){
-      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
-      mpu.getFIFOBytes(fifoBuffer, packetSize);
-      fifoCount -= packetSize;
-      mpu.dmpGetQuaternion(&q, fifoBuffer);
-      mpu.dmpGetGravity(&gravity, &q);
-      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-    }
+  mpuInterrupt = false;
+  mpuIntStatus = mpu.getIntStatus();
+  fifoCount = mpu.getFIFOCount();
+  
+  if((mpuIntStatus & 0x10) || fifoCount >= 1024){
+    mpu.resetFIFO(); 
+    Serial.print(F("rf : "));
+    Serial.println(millis());
+  }else if(mpuIntStatus & 0x02){
+    while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+    mpu.getFIFOBytes(fifoBuffer, packetSize);
+    fifoCount -= packetSize;
+    mpu.dmpGetQuaternion(&q, fifoBuffer);
+    mpu.dmpGetGravity(&gravity, &q);
+    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
     gyro_x = -orig_gyro_x - ypr[2];
     gyro_y = ypr[1] - orig_gyro_y;
-    accel_z = gravity.z * gravity.getMagnitude() * 10.0 - orig_accel_z;
+
+    mpu.dmpGetAccel(accel_data, fifoBuffer);
+    accel_z = ((double)accel_data[2]) / 1000.0 - orig_accel_z;
+  
+    if (presample_count < 0 && (accel_z > ACCEL_FILTER_MAX || accel_z < ACCEL_FILTER_MIN)) accel_z = 0.0;
+  }
 }
 
 void arm(int delay_req)
@@ -288,9 +315,9 @@ void arm(int delay_req)
 void process(void)
 {
   char command = Console.read();
-  Console.println(command);
+  Serial.println(command);
   if (presample_count > 0) {
-    Console.println(F("not ready.."));
+    Serial.println(F("not ready.."));
     return;
   }
   
@@ -299,11 +326,11 @@ void process(void)
     did_takeoff = 0;
     doing_takeoff = 0;
     reset_adjust_variables();
-    arm(1);
+    arm(0);
   }
 
   if (doing_takeoff) {
-    Console.println(F("doing take off"));
+    Serial.println(F("doing take off"));
     return;
   }
   
