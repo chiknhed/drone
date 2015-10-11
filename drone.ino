@@ -36,8 +36,8 @@
 
 #define UPDOWN_MULT_FACTOR  (-2.0)
 
-#define ACCEL_FILTER_MAX         0.5
-#define ACCEL_FILTER_MIN         -0.5
+#define ACCEL_FILTER_MAX         100000.0
+#define ACCEL_FILTER_MIN         -100000.0
 
 double orig_accel_z = 0;
 double orig_gyro_x = 0, orig_gyro_y = 0;
@@ -106,19 +106,24 @@ void setup() {
 }
 
 void loop() {
-  if (Console.available()) {
-    process();
-  }
-
   while(!mpuInterrupt && fifoCount < packetSize){
-     
+
     /* Do nothing while MPU is not working
      * This should be a VERY short period
      */
       
   }
-  getYPR();
+  if (Console.available()) {
+    process();
+  }
+  getYPR();  
+  count_presample();
+  if((did_takeoff || doing_takeoff) && !in_error)
+    position_adjust();
+}
 
+void count_presample(void)
+{
   if (presample_count > PRESAMPLE_STABLE_CHECK) {
     presample_count --;
     if (presample_count % 100 == 0) Serial.println(presample_count / 100);
@@ -141,21 +146,16 @@ void loop() {
       digitalWrite(13, HIGH);
     }
   }
-  
-  if((did_takeoff || doing_takeoff) && !in_error)
-    position_adjust();
 }
 
 void print_sensors(void) {
+#ifdef VERBOSE_DEBUG
   Serial.print(F("t : "));
   Serial.println(millis());
-#ifdef VERBOSE_DEBUG
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
-#endif
   Serial.print(F("gyro_x : "));
   Serial.println(gyro_x);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("gyro_y : "));
   Serial.println(gyro_y);
 #endif
@@ -209,10 +209,8 @@ void set_servos(void)
 #ifdef VERBOSE_DEBUG
   Serial.print(F("velocity : "));
   Serial.println(velocity);
-#endif
   Serial.print(F("v_ac : "));
   Serial.println(v_ac);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("v_bd : "));
   Serial.println(v_bd);
   Serial.print(F("va : "));
@@ -274,12 +272,12 @@ void getYPR(){
   mpuInterrupt = false;
   mpuIntStatus = mpu.getIntStatus();
   fifoCount = mpu.getFIFOCount();
-  
+
   if((mpuIntStatus & 0x10) || fifoCount >= 1024){
     mpu.resetFIFO(); 
     Serial.print(F("rf : "));
     Serial.println(millis());
-  }else if(mpuIntStatus & 0x02){
+  } else if(mpuIntStatus & 0x02){
     while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
     mpu.getFIFOBytes(fifoBuffer, packetSize);
     fifoCount -= packetSize;
