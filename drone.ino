@@ -34,10 +34,7 @@
 #define PID_XY_INFLUENCE    20.0
 #define PID_THROTTLE_INFLUENCE  30.0
 
-#define UPDOWN_MULT_FACTOR  (-2.0)
-
-#define ACCEL_FILTER_MAX         100000.0
-#define ACCEL_FILTER_MIN         -100000.0
+#define UPDOWN_MULT_FACTOR  (-1.0)
 
 double orig_accel_z = 0;
 double orig_gyro_x = 0, orig_gyro_y = 0;
@@ -55,9 +52,9 @@ double v_ac, v_bd, velocity;
 int presample_count  = PRESAMPLE_COUNT;
 
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 2, 0.7, 2, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 2, 0.7, 2, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 3, 20, 2, REVERSE);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 2, 5, 2, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 2, 5, 2, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, 3, 2, 2, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -149,11 +146,11 @@ void count_presample(void)
 }
 
 void print_sensors(void) {
-#ifdef VERBOSE_DEBUG
   Serial.print(F("t : "));
   Serial.println(millis());
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("gyro_x : "));
   Serial.println(gyro_x);
   Serial.print(F("gyro_y : "));
@@ -186,10 +183,11 @@ void set_servos(void)
 {
   int va, vb, vc, vd;
   
-  va = hover_throttle + velocity + v_ac + 0.5;
-  vb = hover_throttle + velocity + v_bd + 0.5;
-  vc = hover_throttle + velocity - v_ac + 0.5;
-  vd = hover_throttle + velocity - v_bd + 0.5;
+  va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0) + 0.5;
+  vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0) + 0.5;
+  vc = (hover_throttle + velocity) * (abs(-100.0 + v_ac)/100.0) + 0.5;
+  vd = (hover_throttle + velocity) * (abs(-100.0 + v_bd)/100.0) + 0.5;
+
 
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
@@ -206,21 +204,13 @@ void set_servos(void)
   c.write(vc);
   d.write(vd);
 
-#ifdef VERBOSE_DEBUG
   Serial.print(F("velocity : "));
   Serial.println(velocity);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("v_ac : "));
   Serial.println(v_ac);
   Serial.print(F("v_bd : "));
   Serial.println(v_bd);
-  Serial.print(F("va : "));
-  Serial.println(va);
-  Serial.print(F("vb : "));
-  Serial.println(vb);
-  Serial.print(F("vc : "));
-  Serial.println(vc);
-  Serial.print(F("vd : "));
-  Serial.println(vd);
   Serial.println();
 #endif
 }
@@ -289,9 +279,7 @@ void getYPR(){
     gyro_y = ypr[1] - orig_gyro_y;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
-    accel_z = ((double)accel_data[2]) / 1000.0 - orig_accel_z;
-  
-    if (presample_count < 0 && (accel_z > ACCEL_FILTER_MAX || accel_z < ACCEL_FILTER_MIN)) accel_z = 0.0;
+    accel_z = ((double)accel_data[2]) / 100000.0 - orig_accel_z;
   }
 }
 
