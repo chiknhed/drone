@@ -110,13 +110,14 @@ void loop() {
      */
       
   }
-  if (Console.available()) {
-    process();
-  }
   getYPR();  
   count_presample();
   if((did_takeoff || doing_takeoff) && !in_error)
     position_adjust();
+  
+  if (Console.available()) {
+    process();
+  }
 }
 
 void count_presample(void)
