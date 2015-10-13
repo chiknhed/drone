@@ -9,6 +9,16 @@
 
 //#define VERBOSE_DEBUG
 
+#define PID_GYRO_P            5
+#define PID_GYRO_I            10
+#define PID_GYRO_D            3
+
+#define PID_ACCEL_P           10
+#define PID_ACCEL_I           10
+#define PID_ACCEL_D           2
+
+#define PID_GYRO_SAMPLE_PERIOD     10
+
 #define PRESAMPLE_COUNT     1500
 #define PRESAMPLE_STABLE_CHECK  30
 #define PRESAMPLE_STABLE_TOLERANCE  0.02
@@ -27,18 +37,20 @@
 #define ESC_C 6
 #define ESC_D 5
 
-#define TAKEOFF_Z_ACCEL       (-0.05)
+#define TAKEOFF_Z_ACCEL       (-0.08)
 #define TAKEOFF_THROTTLE_STEP 0.03
-#define TAKEOFF_GOUP_DELAY    3000
+#define TAKEOFF_GOUP_DELAY    5000
 
 #define PID_XY_INFLUENCE    20.0
-#define PID_THROTTLE_INFLUENCE  30.0
+#define PID_THROTTLE_INFLUENCE  70.0
 
-#define UPDOWN_MULT_FACTOR  (-1.0)
+#define UPDOWN_MULT_FACTOR  (0.3)
+#define MOVE_MULT_FACTOR    (0.1)
+
 
 double orig_accel_z = 0;
 double orig_gyro_x = 0, orig_gyro_y = 0;
-double adj_accel_z, adj_gyro_x, adj_gyro_y;
+double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
 double hover_throttle = ESC_WORKING_MIN;
@@ -52,9 +64,9 @@ double v_ac, v_bd, velocity;
 int presample_count  = PRESAMPLE_COUNT;
 
 Servo a, b, c, d;
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, 2, 5, 2, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, 2, 5, 2, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, 3, 2, 2, REVERSE);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -93,8 +105,10 @@ void setup() {
   digitalWrite(13, LOW);
   
   xPID.SetMode(AUTOMATIC);
+  xPID.SetSampleTime(PID_GYRO_SAMPLE_PERIOD);
   xPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   yPID.SetMode(AUTOMATIC);
+  yPID.SetSampleTime(PID_GYRO_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
   vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
@@ -122,6 +136,8 @@ void loop() {
 
 void count_presample(void)
 {
+  if (in_error) return;
+  
   if (presample_count > PRESAMPLE_STABLE_CHECK) {
     presample_count --;
     if (presample_count % 100 == 0) Serial.println(presample_count / 100);
@@ -133,6 +149,9 @@ void count_presample(void)
     orig_gyro_y = gyro_y;
     orig_accel_z = accel_z;
     Serial.println(F("R."));
+    Serial.println(orig_accel_z);
+    Serial.println(orig_gyro_x);
+    Serial.println(orig_gyro_y);
   } else if (presample_count < PRESAMPLE_STABLE_CHECK && presample_count >= 0) {
     presample_count --;
     if (gyro_x > PRESAMPLE_STABLE_TOLERANCE || gyro_x < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
@@ -140,8 +159,11 @@ void count_presample(void)
     if (accel_z > PRESAMPLE_STABLE_TOLERANCE || accel_z < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
 
     if (in_error) {
-      Serial.println(F("Sensor unstable.."));
       digitalWrite(13, HIGH);
+      presample_count = PRESAMPLE_COUNT;
+      in_error = 0;
+      orig_gyro_x = orig_gyro_y = orig_accel_z = 0;
+      initMPU();
     }
   }
 }
@@ -149,13 +171,13 @@ void count_presample(void)
 void print_sensors(void) {
   Serial.print(F("t : "));
   Serial.println(millis());
+  Serial.print(F("gx : "));
+  Serial.println(gyro_x);
+#ifdef VERBOSE_DEBUG
+  Serial.print(F("gy : "));
+  Serial.println(gyro_y);
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
-#ifdef VERBOSE_DEBUG
-  Serial.print(F("gyro_x : "));
-  Serial.println(gyro_x);
-  Serial.print(F("gyro_y : "));
-  Serial.println(gyro_y);
 #endif
 }
 
@@ -171,7 +193,7 @@ void initMPU(){
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
   } else {
-    Serial.println(F("MPU init failed"));
+    Serial.println(F("E."));
     digitalWrite(13, 1);
   }
 }
@@ -183,13 +205,12 @@ inline void dmpDataReady() {
 void set_servos(void)
 {
   int va, vb, vc, vd;
-  
+
   va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0) + 0.5;
   vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0) + 0.5;
   vc = (hover_throttle + velocity) * (abs(-100.0 + v_ac)/100.0) + 0.5;
   vd = (hover_throttle + velocity) * (abs(-100.0 + v_bd)/100.0) + 0.5;
-
-
+  
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
   if (vc > ESC_MAX) vc = ESC_MAX;
@@ -205,13 +226,13 @@ void set_servos(void)
   c.write(vc);
   d.write(vd);
 
-  Serial.print(F("velocity : "));
-  Serial.println(velocity);
-#ifdef VERBOSE_DEBUG
-  Serial.print(F("v_ac : "));
+  Serial.print(F("ac : "));
   Serial.println(v_ac);
-  Serial.print(F("v_bd : "));
+#ifdef VERBOSE_DEBUG
+  Serial.print(F("bd : "));
   Serial.println(v_bd);
+  Serial.print(F("vel : "));
+  Serial.println(velocity);
   Serial.println();
 #endif
 }
@@ -254,9 +275,8 @@ void position_adjust(void)
     hover_throttle += TAKEOFF_THROTTLE_STEP;
   }
   
+  print_sensors();  
   set_servos();
-
-  print_sensors();
 }
 
 void getYPR(){
@@ -276,11 +296,11 @@ void getYPR(){
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
-    gyro_x = -orig_gyro_x - ypr[2];
+    gyro_x = - orig_gyro_x - ypr[2] ;
     gyro_y = ypr[1] - orig_gyro_y;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
-    accel_z = ((double)accel_data[2]) / 100000.0 - orig_accel_z;
+    accel_z = ((double)accel_data[2]) / 10000.0 - orig_accel_z;
   }
 }
 
@@ -304,7 +324,7 @@ void process(void)
   char command = Console.read();
   Serial.println(command);
   if (presample_count > 0) {
-    Serial.println(F("not ready.."));
+    Serial.println(F("NR."));
     return;
   }
   
@@ -317,11 +337,10 @@ void process(void)
   }
 
   if (doing_takeoff) {
-    Serial.println(F("doing take off"));
     return;
   }
   
-  double param = 0.1;
+  double param = 1.0;
   if(command == 'p') {
     if (!did_takeoff) {
       hover_throttle = ESC_WORKING_MIN;
@@ -330,29 +349,29 @@ void process(void)
       did_takeoff = 0;
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
-      adj_accel_z = param * UPDOWN_MULT_FACTOR;
+      adj_accel_z = - param * UPDOWN_MULT_FACTOR;
     } else {
       repos_remaining_time = MOVE_DURATION_MS;
-      adj_accel_z = param * UPDOWN_MULT_FACTOR;
+      adj_accel_z = - param * UPDOWN_MULT_FACTOR;
     }
   } if (command == 'l') {
     repos_remaining_time = MOVE_DURATION_MS;
-    adj_accel_z = - param * UPDOWN_MULT_FACTOR;
+    adj_accel_z = param * UPDOWN_MULT_FACTOR;
   }else if (command == 'w') {
     repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = -param;
-    adj_gyro_y = -param;
+    adj_gyro_x = -param * MOVE_MULT_FACTOR;
+    adj_gyro_y = -param * MOVE_MULT_FACTOR;
   } else if (command == 's') {
     repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = param;
-    adj_gyro_y = param;
+    adj_gyro_x = param * MOVE_MULT_FACTOR;
+    adj_gyro_y = param * MOVE_MULT_FACTOR;
   } else if (command == 'a') {
     repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = -param;
-    adj_gyro_y = param;
+    adj_gyro_x = -param * MOVE_MULT_FACTOR;
+    adj_gyro_y = param * MOVE_MULT_FACTOR;
   } else if (command == 'd') {
     repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = param;
-    adj_gyro_y = -param;
+    adj_gyro_x = param * MOVE_MULT_FACTOR;
+    adj_gyro_y = -param * MOVE_MULT_FACTOR;
   }
 }
