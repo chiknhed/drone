@@ -54,7 +54,7 @@ double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
 double hover_throttle = ESC_WORKING_MIN;
-int hover_found = 0;
+boolean hover_found = false;
 
 unsigned long repos_last_time;
 unsigned long repos_remaining_time;
@@ -62,6 +62,7 @@ unsigned long repos_remaining_time;
 double v_ac, v_bd, velocity;
 
 int presample_count  = PRESAMPLE_COUNT;
+boolean resample_sensor = false;
 
 Servo a, b, c, d;
 PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
@@ -145,13 +146,7 @@ void count_presample(void)
     if (presample_count % 100 == 1) digitalWrite(13, HIGH);
   } else if (presample_count == PRESAMPLE_STABLE_CHECK) {
     presample_count --;
-    orig_gyro_x = gyro_x;
-    orig_gyro_y = gyro_y;
-    orig_accel_z = accel_z;
-    Serial.println(F("R."));
-    Serial.println(orig_accel_z);
-    Serial.println(orig_gyro_x);
-    Serial.println(orig_gyro_y);
+    resample_sensor = true;
   } else if (presample_count < PRESAMPLE_STABLE_CHECK && presample_count >= 0) {
     presample_count --;
     if (gyro_x > PRESAMPLE_STABLE_TOLERANCE || gyro_x < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
@@ -169,11 +164,11 @@ void count_presample(void)
 }
 
 void print_sensors(void) {
+#ifdef VERBOSE_DEBUG
   Serial.print(F("t : "));
   Serial.println(millis());
   Serial.print(F("gx : "));
   Serial.println(gyro_x);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("gy : "));
   Serial.println(gyro_y);
   Serial.print(F("accel_z : "));
@@ -226,9 +221,9 @@ void set_servos(void)
   c.write(vc);
   d.write(vd);
 
+#ifdef VERBOSE_DEBUG
   Serial.print(F("ac : "));
   Serial.println(v_ac);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("bd : "));
   Serial.println(v_bd);
   Serial.print(F("vel : "));
@@ -249,7 +244,7 @@ void position_adjust(void)
   unsigned long current_time;
 
   if (!hover_found && accel_z < TAKEOFF_Z_ACCEL) {
-    hover_found = 1;
+    hover_found = true;
     doing_takeoff = 0;
     did_takeoff = 1;
     Serial.print(F("Hover found :"));
@@ -296,7 +291,19 @@ void getYPR(){
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
-    gyro_x = - orig_gyro_x - ypr[2] ;
+    if (resample_sensor) {
+      resample_sensor = false;
+      orig_gyro_x = ypr[2];
+      orig_gyro_y = ypr[1];
+      orig_accel_z = ((double)accel_data[2]) / 10000.0;
+        
+      Serial.println(F("R."));
+      Serial.println(orig_accel_z);
+      Serial.println(orig_gyro_x);
+      Serial.println(orig_gyro_y);
+    }
+
+    gyro_x = orig_gyro_x - ypr[2] ;
     gyro_y = ypr[1] - orig_gyro_y;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
@@ -344,11 +351,12 @@ void process(void)
   if(command == 'p') {
     if (!did_takeoff) {
       hover_throttle = ESC_WORKING_MIN;
-      hover_found = 0;
+      hover_found = false;
       doing_takeoff = 1;
       did_takeoff = 0;
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
+      resample_sensor = true;
       adj_accel_z = - param * UPDOWN_MULT_FACTOR;
     } else {
       repos_remaining_time = MOVE_DURATION_MS;
