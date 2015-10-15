@@ -1,5 +1,11 @@
+/* much code from the following sites
+ *  
+ *  https://github.com/strangedev/Arduino-Quadcopter
+ *  400Hz PWM code from somewhere T_T (don't remember)
+ *  
+ */
+
 #include <Wire.h>
-#include <Servo.h>
 #include <PID_v1.h>
 #include <I2Cdev.h>
 #include <helper_3dmath.h>
@@ -9,15 +15,15 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            5
-#define PID_GYRO_I            10
+#define PID_GYRO_P            2
+#define PID_GYRO_I            4
 #define PID_GYRO_D            3
 
-#define PID_ACCEL_P           10
-#define PID_ACCEL_I           10
-#define PID_ACCEL_D           2
+#define PID_ACCEL_P           0.01
+#define PID_ACCEL_I           0.01
+#define PID_ACCEL_D           1
 
-#define PID_GYRO_SAMPLE_PERIOD     10
+#define PID_SAMPLE_PERIOD     10
 
 #define PRESAMPLE_COUNT     1500
 #define PRESAMPLE_STABLE_CHECK  30
@@ -27,24 +33,26 @@
 #define MOVE_DURATION_MS      2000
 
 #define ESC_MIN               22
-#define ESC_WORKING_MIN       75
-#define ESC_MAX               150
+#define ESC_WORKING_MIN       40
+#define ESC_MAX               115
 #define ESC_ARM_DELAY         5000
   
-#define ESC_A 9
-#define ESC_B 8
+#define ESC_C_REG OCR1A // PIN 9
+#define ESC_B_REG OCR1B // PIN 10
+#define ESC_A_REG OCR1C // PIN 11
+#define ESC_D_REG OCR3A // PIN 5
 
-#define ESC_C 6
-#define ESC_D 5
+#define ESC_REG_MIN 1400
+#define ESC_REG_MAX 3800
 
-#define TAKEOFF_Z_ACCEL       (-0.08)
+#define TAKEOFF_Z_ACCEL       (-0.05)
 #define TAKEOFF_THROTTLE_STEP 0.03
 #define TAKEOFF_GOUP_DELAY    5000
 
 #define PID_XY_INFLUENCE    20.0
-#define PID_THROTTLE_INFLUENCE  70.0
+#define PID_THROTTLE_INFLUENCE  50.0
 
-#define UPDOWN_MULT_FACTOR  (0.3)
+#define UPDOWN_MULT_FACTOR  (0.1)
 #define MOVE_MULT_FACTOR    (0.1)
 
 
@@ -64,7 +72,6 @@ double v_ac, v_bd, velocity;
 int presample_count  = PRESAMPLE_COUNT;
 boolean resample_sensor = false;
 
-Servo a, b, c, d;
 PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
 PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
 PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
@@ -90,11 +97,7 @@ int doing_takeoff = 0;
 void setup() {
   Serial.begin(115200);
 
-  a.attach(ESC_A);
-  b.attach(ESC_B);
-  c.attach(ESC_C);
-  d.attach(ESC_D);
-  delay(100);
+  initServo();
   
   arm(0);
 
@@ -106,12 +109,13 @@ void setup() {
   digitalWrite(13, LOW);
   
   xPID.SetMode(AUTOMATIC);
-  xPID.SetSampleTime(PID_GYRO_SAMPLE_PERIOD);
+  xPID.SetSampleTime(PID_SAMPLE_PERIOD);
   xPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   yPID.SetMode(AUTOMATIC);
-  yPID.SetSampleTime(PID_GYRO_SAMPLE_PERIOD);
+  yPID.SetSampleTime(PID_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
+  vPID.SetSampleTime(PID_SAMPLE_PERIOD);
   vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
 
   initMPU();
@@ -133,6 +137,18 @@ void loop() {
   if (Console.available()) {
     process();
   }
+}
+
+void initServo(void)
+{
+  DDRB |= (1 << 7) | (1 << 6) | (1 << 5);
+  ICR1 = 0x1387;  // 400Hz
+  TCCR1A = 0b10101010;
+  TCCR1B = 0b00011010;
+  DDRC |= (1 << PC6); // motor3  PWM Port.
+  ICR3 = 0x1387; 
+  TCCR3A = 0b10101010;
+  TCCR3B = 0b00011010;
 }
 
 void count_presample(void)
@@ -171,6 +187,8 @@ void print_sensors(void) {
   Serial.println(gyro_x);
   Serial.print(F("gy : "));
   Serial.println(gyro_y);
+  Serial.print(F("adj_accel_z : "));
+  Serial.println(adj_accel_z);
   Serial.print(F("accel_z : "));
   Serial.println(accel_z);
 #endif
@@ -200,6 +218,7 @@ inline void dmpDataReady() {
 void set_servos(void)
 {
   int va, vb, vc, vd;
+  int regVal;
 
   va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0) + 0.5;
   vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0) + 0.5;
@@ -216,10 +235,14 @@ void set_servos(void)
   if (vc < ESC_WORKING_MIN) vc = ESC_WORKING_MIN;
   if (vd < ESC_WORKING_MIN) vd = ESC_WORKING_MIN;
   
-  a.write(va);
-  b.write(vb);
-  c.write(vc);
-  d.write(vd);
+  regVal = map(va, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  ESC_A_REG = regVal;
+  regVal = map(vb, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  ESC_B_REG = regVal;
+  regVal = map(vc, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  ESC_C_REG = regVal;
+  regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  ESC_D_REG = regVal;
 
 #ifdef VERBOSE_DEBUG
   Serial.print(F("ac : "));
@@ -313,14 +336,10 @@ void getYPR(){
 
 void arm(int delay_req)
 {
-  unsigned long take_off_time;
-    
-  a.write(ESC_MIN);
-  b.write(ESC_MIN);
-  c.write(ESC_MIN);
-  d.write(ESC_MIN);
-  Serial.println(ESC_MIN);
-  Serial.println();
+  ESC_A_REG = ESC_REG_MIN;
+  ESC_B_REG = ESC_REG_MIN;
+  ESC_C_REG = ESC_REG_MIN;
+  ESC_D_REG = ESC_REG_MIN;
   
   if (delay_req)
     delay(ESC_ARM_DELAY);
