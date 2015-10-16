@@ -15,32 +15,36 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            2
-#define PID_GYRO_I            4
-#define PID_GYRO_D            3
+#define PID_GYRO_P            1.5
+#define PID_GYRO_I            5
+#define PID_GYRO_D            2
 
-#define PID_ACCEL_P           0.01
-#define PID_ACCEL_I           0.01
-#define PID_ACCEL_D           1
+#define PID_ACCEL_P           1
+#define PID_ACCEL_I           0.8
+#define PID_ACCEL_D           3
+
+#define YAW_P_VAL 2
+#define YAW_I_VAL 5
+#define YAW_D_VAL 1
 
 #define PID_SAMPLE_PERIOD     10
 
 #define PRESAMPLE_COUNT     1500
 #define PRESAMPLE_STABLE_CHECK  30
-#define PRESAMPLE_STABLE_TOLERANCE  0.02
+#define PRESAMPLE_STABLE_TOLERANCE  0.5
 
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      2000
 
-#define ESC_MIN               22
-#define ESC_WORKING_MIN       40
-#define ESC_MAX               115
+#define ESC_MIN               88
+#define ESC_WORKING_MIN       160
+#define ESC_MAX               460
 #define ESC_ARM_DELAY         5000
   
-#define ESC_C_REG OCR1A // PIN 9
-#define ESC_B_REG OCR1B // PIN 10
 #define ESC_A_REG OCR1C // PIN 11
-#define ESC_D_REG OCR3A // PIN 5
+#define ESC_B_REG OCR1B // PIN 10
+#define ESC_C_REG OCR3A // PIN 5
+#define ESC_D_REG OCR1A // PIN 9
 
 #define ESC_REG_MIN 1400
 #define ESC_REG_MAX 3800
@@ -57,7 +61,7 @@
 
 
 double orig_accel_z = 0;
-double orig_gyro_x = 0, orig_gyro_y = 0;
+double orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
@@ -67,14 +71,11 @@ boolean hover_found = false;
 unsigned long repos_last_time;
 unsigned long repos_remaining_time;
 
-double v_ac, v_bd, velocity;
+double v_ac, v_bd, velocity, bal_axes;
+double zero_value = 0.0;
 
 int presample_count  = PRESAMPLE_COUNT;
 boolean resample_sensor = false;
-
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
@@ -82,6 +83,7 @@ VectorFloat gravity;                   // gravity vector for ypr
 int16_t accel_data[3];
 float ypr[3] = {0.0f,0.0f,0.0f};       // yaw pitch roll values
 float yprLast[3] = {0.0f, 0.0f, 0.0f};
+double yaw;
 
 uint8_t mpuIntStatus;                  // mpu statusbyte
 uint8_t in_error;                     // device status    
@@ -93,6 +95,11 @@ volatile bool mpuInterrupt = false;    //interrupt flag
 
 int did_takeoff = 0;
 int doing_takeoff = 0;
+
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
+PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
+PID yawPID(&yaw, &bal_axes, &zero_value, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
 
 void setup() {
   Serial.begin(115200);
@@ -106,6 +113,7 @@ void setup() {
   Bridge.begin();
   Console.begin();
   FileSystem.begin();
+  delay(5000);
   digitalWrite(13, LOW);
   
   xPID.SetMode(AUTOMATIC);
@@ -115,7 +123,6 @@ void setup() {
   yPID.SetSampleTime(PID_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
   vPID.SetMode(AUTOMATIC);
-  vPID.SetSampleTime(PID_SAMPLE_PERIOD);
   vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
 
   initMPU();
@@ -129,14 +136,24 @@ void loop() {
      */
       
   }
-  getYPR();  
+  if (!getYPR())
+    return;  
   count_presample();
+  
   if((did_takeoff || doing_takeoff) && !in_error)
     position_adjust();
   
   if (Console.available()) {
     process();
   }
+}
+
+void reset_pid_output(void)
+{
+  v_ac = 0.0;
+  v_bd = 0.0;
+  bal_axes = 0.0;
+  velocity = 0.0;
 }
 
 void initServo(void)
@@ -165,15 +182,13 @@ void count_presample(void)
     resample_sensor = true;
   } else if (presample_count < PRESAMPLE_STABLE_CHECK && presample_count >= 0) {
     presample_count --;
-    if (gyro_x > PRESAMPLE_STABLE_TOLERANCE || gyro_x < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
-    if (gyro_y > PRESAMPLE_STABLE_TOLERANCE || gyro_y < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
     if (accel_z > PRESAMPLE_STABLE_TOLERANCE || accel_z < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
+    if (yaw > PRESAMPLE_STABLE_TOLERANCE || yaw < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
 
     if (in_error) {
       digitalWrite(13, HIGH);
       presample_count = PRESAMPLE_COUNT;
       in_error = 0;
-      orig_gyro_x = orig_gyro_y = orig_accel_z = 0;
       initMPU();
     }
   }
@@ -220,10 +235,10 @@ void set_servos(void)
   int va, vb, vc, vd;
   int regVal;
 
-  va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0) + 0.5;
-  vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0) + 0.5;
-  vc = (hover_throttle + velocity) * (abs(-100.0 + v_ac)/100.0) + 0.5;
-  vd = (hover_throttle + velocity) * (abs(-100.0 + v_bd)/100.0) + 0.5;
+  va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
+  vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
+  vc = (hover_throttle + velocity) * (abs(-100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
+  vd = (hover_throttle + velocity) * (abs(-100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
   
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
@@ -288,7 +303,7 @@ void position_adjust(void)
   if (hover_found) {
     xPID.Compute();
     yPID.Compute();
-    vPID.Compute();
+    //vPID.Compute();
   } else {
     hover_throttle += TAKEOFF_THROTTLE_STEP;
   }
@@ -297,7 +312,7 @@ void position_adjust(void)
   set_servos();
 }
 
-void getYPR(){
+boolean getYPR(){
   mpuInterrupt = false;
   mpuIntStatus = mpu.getIntStatus();
   fifoCount = mpu.getFIFOCount();
@@ -306,6 +321,7 @@ void getYPR(){
     mpu.resetFIFO(); 
     Serial.print(F("rf : "));
     Serial.println(millis());
+    return false;
   } else if(mpuIntStatus & 0x02){
     while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
     mpu.getFIFOBytes(fifoBuffer, packetSize);
@@ -316,21 +332,33 @@ void getYPR(){
 
     if (resample_sensor) {
       resample_sensor = false;
-      orig_gyro_x = ypr[2];
-      orig_gyro_y = ypr[1];
+      orig_yaw = ypr[0] * 180 / M_PI;
       orig_accel_z = ((double)accel_data[2]) / 10000.0;
         
       Serial.println(F("R."));
       Serial.println(orig_accel_z);
-      Serial.println(orig_gyro_x);
-      Serial.println(orig_gyro_y);
     }
 
-    gyro_x = orig_gyro_x - ypr[2] ;
-    gyro_y = ypr[1] - orig_gyro_y;
+    ypr[2] = ypr[2] * 180 / M_PI;
+    ypr[1] = ypr[1] * 180 / M_PI;
+    ypr[0] = ypr[0] * 180 / M_PI;
+
+    if(abs(ypr[0]-yprLast[0])>30) ypr[0] = yprLast[0];
+    if(abs(ypr[1]-yprLast[1])>30) ypr[1] = yprLast[1];
+    if(abs(ypr[2]-yprLast[2])>30) ypr[2] = yprLast[2];
+    
+    yprLast[0] = ypr[0];
+    yprLast[1] = ypr[1];
+    yprLast[2] = ypr[2];
+
+    gyro_x = - ypr[2];
+    gyro_y = ypr[1];
+    yaw = ypr[0] - orig_yaw;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
     accel_z = ((double)accel_data[2]) / 10000.0 - orig_accel_z;
+
+    return true;
   }
 }
 
@@ -373,15 +401,18 @@ void process(void)
       hover_found = false;
       doing_takeoff = 1;
       did_takeoff = 0;
+      reset_pid_output();
       reset_adjust_variables();
       repos_remaining_time = TAKEOFF_GOUP_DELAY;
       resample_sensor = true;
       adj_accel_z = - param * UPDOWN_MULT_FACTOR;
     } else {
+      velocity += 5;
       repos_remaining_time = MOVE_DURATION_MS;
       adj_accel_z = - param * UPDOWN_MULT_FACTOR;
     }
   } if (command == 'l') {
+    velocity -= 5;
     repos_remaining_time = MOVE_DURATION_MS;
     adj_accel_z = param * UPDOWN_MULT_FACTOR;
   }else if (command == 'w') {
