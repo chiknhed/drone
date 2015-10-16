@@ -15,9 +15,9 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            1.5
-#define PID_GYRO_I            5
-#define PID_GYRO_D            2
+#define PID_GYRO_P            0.8
+#define PID_GYRO_I            1.4
+#define PID_GYRO_D            5
 
 #define PID_ACCEL_P           1
 #define PID_ACCEL_I           0.8
@@ -31,7 +31,7 @@
 
 #define PRESAMPLE_COUNT     1500
 #define PRESAMPLE_STABLE_CHECK  30
-#define PRESAMPLE_STABLE_TOLERANCE  0.5
+#define PRESAMPLE_STABLE_TOLERANCE  3.0
 
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      2000
@@ -61,7 +61,7 @@
 
 
 double orig_accel_z = 0;
-double orig_yaw = 0;
+double orig_gyro_x = 0, orig_gyro_y = 0, orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
@@ -174,7 +174,6 @@ void count_presample(void)
   
   if (presample_count > PRESAMPLE_STABLE_CHECK) {
     presample_count --;
-    if (presample_count % 100 == 0) Serial.println(presample_count / 100);
     if (presample_count % 100 == 50) digitalWrite(13, LOW);
     if (presample_count % 100 == 1) digitalWrite(13, HIGH);
   } else if (presample_count == PRESAMPLE_STABLE_CHECK) {
@@ -183,7 +182,8 @@ void count_presample(void)
   } else if (presample_count < PRESAMPLE_STABLE_CHECK && presample_count >= 0) {
     presample_count --;
     if (accel_z > PRESAMPLE_STABLE_TOLERANCE || accel_z < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
-    if (yaw > PRESAMPLE_STABLE_TOLERANCE || yaw < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
+    if (gyro_x > PRESAMPLE_STABLE_TOLERANCE || gyro_x < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
+    if (gyro_y > PRESAMPLE_STABLE_TOLERANCE || gyro_y < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
 
     if (in_error) {
       digitalWrite(13, HIGH);
@@ -332,11 +332,12 @@ boolean getYPR(){
 
     if (resample_sensor) {
       resample_sensor = false;
+      orig_gyro_x = ypr[2] * 180 / M_PI;
+      orig_gyro_y = ypr[1] * 180 / M_PI;
       orig_yaw = ypr[0] * 180 / M_PI;
-      orig_accel_z = ((double)accel_data[2]) / 10000.0;
+      orig_accel_z = ((double)accel_data[2]) / 100.0;
         
       Serial.println(F("R."));
-      Serial.println(orig_accel_z);
     }
 
     ypr[2] = ypr[2] * 180 / M_PI;
@@ -346,17 +347,17 @@ boolean getYPR(){
     if(abs(ypr[0]-yprLast[0])>30) ypr[0] = yprLast[0];
     if(abs(ypr[1]-yprLast[1])>30) ypr[1] = yprLast[1];
     if(abs(ypr[2]-yprLast[2])>30) ypr[2] = yprLast[2];
-    
+
     yprLast[0] = ypr[0];
     yprLast[1] = ypr[1];
     yprLast[2] = ypr[2];
 
-    gyro_x = - ypr[2];
-    gyro_y = ypr[1];
+    gyro_x = orig_gyro_x - ypr[2];
+    gyro_y = ypr[1] - orig_gyro_y;
     yaw = ypr[0] - orig_yaw;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
-    accel_z = ((double)accel_data[2]) / 10000.0 - orig_accel_z;
+    accel_z = ((double)accel_data[2]) / 100.0 - orig_accel_z;
 
     return true;
   }
