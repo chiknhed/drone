@@ -15,9 +15,9 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            0.8
-#define PID_GYRO_I            1.4
-#define PID_GYRO_D            5
+#define PID_GYRO_P            1.3
+#define PID_GYRO_I            5
+#define PID_GYRO_D            10
 
 #define PID_ACCEL_P           1
 #define PID_ACCEL_I           0.8
@@ -43,8 +43,8 @@
   
 #define ESC_A_REG OCR1C // PIN 11
 #define ESC_B_REG OCR1B // PIN 10
-#define ESC_C_REG OCR3A // PIN 5
-#define ESC_D_REG OCR1A // PIN 9
+#define ESC_C_REG OCR1A // PIN 9
+#define ESC_D_REG OCR3A // PIN 5
 
 #define ESC_REG_MIN 1400
 #define ESC_REG_MAX 3800
