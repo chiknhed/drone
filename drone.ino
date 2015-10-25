@@ -6,7 +6,7 @@
  */
 
 #include <Wire.h>
-#include <PID_v1.h>
+#include <PID_v1.h>v
 #include <I2Cdev.h>
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
@@ -15,9 +15,9 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            1.3
-#define PID_GYRO_I            5
-#define PID_GYRO_D            10
+#define PID_GYRO_P            3.9
+#define PID_GYRO_I            14
+#define PID_GYRO_D            1
 
 #define PID_ACCEL_P           1
 #define PID_ACCEL_I           0.8
@@ -31,7 +31,7 @@
 
 #define PRESAMPLE_COUNT     1500
 #define PRESAMPLE_STABLE_CHECK  30
-#define PRESAMPLE_STABLE_TOLERANCE  3.0
+#define PRESAMPLE_STABLE_TOLERANCE  100.0
 
 #define REPOSITION_PERIOD_MS  30ul
 #define MOVE_DURATION_MS      2000
@@ -53,15 +53,15 @@
 #define TAKEOFF_THROTTLE_STEP 0.03
 #define TAKEOFF_GOUP_DELAY    5000
 
-#define PID_XY_INFLUENCE    20.0
+#define PID_XY_INFLUENCE    30.0
 #define PID_THROTTLE_INFLUENCE  50.0
 
 #define UPDOWN_MULT_FACTOR  (0.1)
-#define MOVE_MULT_FACTOR    (0.1)
+#define MOVE_MULT_FACTOR    (10)
 
 
 double orig_accel_z = 0;
-double orig_gyro_x = 0, orig_gyro_y = 0, orig_yaw = 0;
+double orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
@@ -182,9 +182,7 @@ void count_presample(void)
   } else if (presample_count < PRESAMPLE_STABLE_CHECK && presample_count >= 0) {
     presample_count --;
     if (accel_z > PRESAMPLE_STABLE_TOLERANCE || accel_z < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
-    if (gyro_x > PRESAMPLE_STABLE_TOLERANCE || gyro_x < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
-    if (gyro_y > PRESAMPLE_STABLE_TOLERANCE || gyro_y < -PRESAMPLE_STABLE_TOLERANCE) in_error = 1;
-
+    
     if (in_error) {
       digitalWrite(13, HIGH);
       presample_count = PRESAMPLE_COUNT;
@@ -198,8 +196,10 @@ void print_sensors(void) {
 #ifdef VERBOSE_DEBUG
   Serial.print(F("t : "));
   Serial.println(millis());
+#endif
   Serial.print(F("gx : "));
   Serial.println(gyro_x);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("gy : "));
   Serial.println(gyro_y);
   Serial.print(F("adj_accel_z : "));
@@ -259,9 +259,9 @@ void set_servos(void)
   regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
   ESC_D_REG = regVal;
 
-#ifdef VERBOSE_DEBUG
   Serial.print(F("ac : "));
   Serial.println(v_ac);
+#ifdef VERBOSE_DEBUG
   Serial.print(F("bd : "));
   Serial.println(v_bd);
   Serial.print(F("vel : "));
@@ -332,8 +332,6 @@ boolean getYPR(){
 
     if (resample_sensor) {
       resample_sensor = false;
-      orig_gyro_x = ypr[2] * 180 / M_PI;
-      orig_gyro_y = ypr[1] * 180 / M_PI;
       orig_yaw = ypr[0] * 180 / M_PI;
       orig_accel_z = ((double)accel_data[2]) / 100.0;
         
@@ -352,8 +350,8 @@ boolean getYPR(){
     yprLast[1] = ypr[1];
     yprLast[2] = ypr[2];
 
-    gyro_x = orig_gyro_x - ypr[2];
-    gyro_y = ypr[1] - orig_gyro_y;
+    gyro_x = - ypr[2];
+    gyro_y = ypr[1];
     yaw = ypr[0] - orig_yaw;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
