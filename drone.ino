@@ -15,9 +15,9 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            3.9
+#define PID_GYRO_P            4
 #define PID_GYRO_I            14
-#define PID_GYRO_D            1
+#define PID_GYRO_D            0
 
 #define PID_ACCEL_P           1
 #define PID_ACCEL_I           0.8
