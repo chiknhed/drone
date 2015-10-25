@@ -6,7 +6,7 @@
  */
 
 #include <Wire.h>
-#include <PID_v1.h>v
+#include <PID_v1.h>
 #include <I2Cdev.h>
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
