@@ -8,14 +8,15 @@
 
 #define EMPL_TARGET_ATMEGA328
 #include <Wire.h>
+#include <math.h>
 #include <PID_v1.h>
-#include <I2Cdev.h>
 #include <helper_3dmath.h>
 extern "C" {
 #include <inv_mpu.h>
 #include <inv_mpu_dmp_motion_driver.h>
 }
 #include <Console.h>
+#include <FileIO.h>
 
 //#define VERBOSE_DEBUG
 
@@ -36,7 +37,7 @@ extern "C" {
 #define ACCEL_ON        (0x01)
 #define GYRO_ON         (0x02)
 /* Starting sampling rate. */
-#define DEFAULT_MPU_HZ    (20)
+#define DEFAULT_MPU_HZ    (100)
 #define MAX_NAV6_MPU_RATE (100)
 #define MIN_NAV6_MPU_RATE (4)
 /* Data requested by client. */
@@ -74,7 +75,6 @@ extern "C" {
 
 
 double orig_accel_z = 0;
-double orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y, yaw;
 
@@ -124,24 +124,11 @@ float quaternion_accumulator[4] = { 0.0, 0.0, 0.0, 0.0 };
 float calibrated_yaw_offset = 0.0;
 float calibrated_quaternion_offset[4] = { 0.0, 0.0, 0.0, 0.0 };
 
-/******************************************
-* Magnetometer State
-******************************************/
-
-int16_t mag_x = 0;
-int16_t mag_y = 0;
-int16_t mag_z = 0;
-
-float compass_heading_radians = 0.0;
-float compass_heading_degrees = 0.0;
-
 /****************************************
 * Gyro/Accel/DMP State
 ****************************************/
 
-float temp_centigrade = 0.0;  // Gyro/Accel die temperature
 float ypr[3] = { 0, 0, 0 };
-long curr_mpu_temp;
 unsigned long sensor_timestamp;
 
 struct FloatVectorStruct {
@@ -158,7 +145,7 @@ unsigned short gyro_fsr;  // Gyro full-scale_rate, in +/- degrees/sec, possible 
 
 PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
 PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
+//PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
 PID yawPID(&yaw, &bal_axes, &zero_value, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
 
 void setup() {
@@ -174,6 +161,7 @@ void setup() {
   digitalWrite(13, HIGH);
   Bridge.begin();
   Console.begin();
+  FileSystem.begin();
   delay(5000);
   digitalWrite(13, LOW);
 
@@ -183,8 +171,8 @@ void setup() {
   yPID.SetMode(AUTOMATIC);
   yPID.SetSampleTime(PID_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
-  vPID.SetMode(AUTOMATIC);
-  vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
+  //  vPID.SetMode(AUTOMATIC);
+  //  vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
 
   initMPU();
 }
@@ -268,94 +256,18 @@ void loop() {
         quaternion_accumulator[3] += q.z;
 
       }
-      // Send a Yaw/Pitch/Roll/Heading update
-
-      x -= calibrated_yaw_offset;
-
-      if ( x < -180 ) x += 360;
-      if ( x > 180 ) x -= 360;
-      if ( y < -180 ) y += 360;
-      if ( y > 180 ) y -= 360;
-      if ( z < -180 ) z += 360;
-      if ( z > 180 ) z -= 360;
-
-      float linear_acceleration_x;
-      float linear_acceleration_y;
-      float linear_acceleration_z;
-      float q1[4];
-      float q2[4];
-      float q_product[4];
-      float q_conjugate[4];
-      float q_final[4];
-      float world_linear_acceleration_x;
-      float world_linear_acceleration_y;
-      float world_linear_acceleration_z;
-
-      // calculate linear acceleration by
-      // removing the gravity component from raw acceleration values
-
-      linear_acceleration_x = (((float)accel[0]) / (32768.0 / accel_fsr)) - gravity.x;
-      linear_acceleration_y = (((float)accel[1]) / (32768.0 / accel_fsr)) - gravity.y;
-      linear_acceleration_z = (((float)accel[2]) / (32768.0 / accel_fsr)) - gravity.z;
-
-      // Calculate world-frame acceleration
-
-      q1[0] = quat[0] >> 16;
-      q1[1] = quat[1] >> 16;
-      q1[2] = quat[2] >> 16;
-      q1[3] = quat[3] >> 16;
-
-      q2[0] = 0;
-      q2[1] = linear_acceleration_x;
-      q2[2] = linear_acceleration_y;
-      q2[3] = linear_acceleration_z;
-
-      // Rotate linear acceleration so that it's relative to the world reference frame
-
-      // http://www.cprogramming.com/tutorial/3d/quaternions.html
-      // http://www.euclideanspace.com/maths/algebra/realNormedAlgebra/quaternions/transforms/index.htm
-      // http://content.gpwiki.org/index.php/OpenGL:Tutorials:Using_Quaternions_to_represent_rotation
-      // ^ or: http://webcache.googleusercontent.com/search?q=cache:xgJAp3bDNhQJ:content.gpwiki.org/index.php/OpenGL:Tutorials:Using_Quaternions_to_represent_rotation&hl=en&gl=us&strip=1
-
-      // P_out = q * P_in * conj(q)
-      // - P_out is the output vector
-      // - q is the orientation quaternion
-      // - P_in is the input vector (a*aReal)
-      // - conj(q) is the conjugate of the orientation quaternion (q=[w,x,y,z], q*=[w,-x,-y,-z])
-
-      // calculate quaternion product
-      // Quaternion multiplication is defined by:
-      //     (Q1 * Q2).w = (w1w2 - x1x2 - y1y2 - z1z2)
-      //     (Q1 * Q2).x = (w1x2 + x1w2 + y1z2 - z1y2)
-      //     (Q1 * Q2).y = (w1y2 - x1z2 + y1w2 + z1x2)
-      //     (Q1 * Q2).z = (w1z2 + x1y2 - y1x2 + z1w2
-
-      q_product[0] = q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2] - q1[3] * q2[3]; // new w
-      q_product[1] = q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2]; // new x
-      q_product[2] = q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1]; // new y
-      q_product[3] = q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0]; // new z
-
-      q_conjugate[0] = q1[0];
-      q_conjugate[1] = -q1[1];
-      q_conjugate[2] = -q1[2];
-      q_conjugate[3] = -q1[3];
-
-      q_final[0] = q_product[0] * q_conjugate[0] - q_product[1] * q_conjugate[1] - q_product[2] * q_conjugate[2] - q_product[3] * q_conjugate[3]; // new w
-      q_final[1] = q_product[0] * q_conjugate[1] + q_product[1] * q_conjugate[0] + q_product[2] * q_conjugate[3] - q_product[3] * q_conjugate[2]; // new x
-      q_final[2] = q_product[0] * q_conjugate[2] - q_product[1] * q_conjugate[3] + q_product[2] * q_conjugate[0] + q_product[3] * q_conjugate[1]; // new y
-      q_final[3] = q_product[0] * q_conjugate[3] + q_product[1] * q_conjugate[2] - q_product[2] * q_conjugate[1] + q_product[3] * q_conjugate[0]; // new z
-
-      world_linear_acceleration_x = q_final[1];
-      world_linear_acceleration_y = q_final[2];
-      world_linear_acceleration_z = q_final[3];
 
       gyro_x = - z;
       gyro_y = y;
-      accel_z = world_linear_acceleration_z;
-#if 0
-      int num_bytes = IMUProtocol::encodeYPRUpdate(protocol_buffer, x, y, z, compass_heading_degrees);
-      Serial.write((unsigned char *)protocol_buffer, num_bytes);
-#endif
+      yaw = x;
+      accel_z = 0;
+
+      if (did_takeoff || doing_takeoff)
+        position_adjust();
+
+      if (Console.available()) {
+        process();
+      }
     }
   }
   else {
@@ -391,51 +303,6 @@ void loop() {
     }
     */
   }
-
-  if (did_takeoff || doing_takeoff)
-    position_adjust();
-
-  if (Console.available()) {
-    process();
-  }
-}
-
-void resetI2C(void)
-{
-  // reset I2C bus
-  // This ensures that if the nav6 was reset, but the devices
-  // on the I2C bus were not, that any transfer in progress do
-  // not hang the device/bus.  Since the MPU-6050 has a 1024-byte
-  // fifo, and there are 8 bits/byte, 10,000 clock edges
-  // are generated to ensure the fifo is completely cleared
-  // in the worst case.
-
-  pinMode(SDA_PIN, INPUT);
-  pinMode(SCL_PIN, OUTPUT);
-  pinMode(13, OUTPUT);
-
-  digitalWrite(13, LOW);
-
-  // Clock through up to 1000 bits
-  int x = 0;
-  for ( int i = 0; i < 10000; i++ ) {
-
-    digitalWrite(SCL_PIN, HIGH);
-    digitalWrite(SCL_PIN, LOW);
-    digitalWrite(SCL_PIN, HIGH);
-
-    x++;
-    if ( x == 8 ) {
-      x = 0;
-      // send a I2C stop signal
-      digitalWrite(SDA_PIN, HIGH);
-      digitalWrite(SDA_PIN, LOW);
-    }
-  }
-
-  // send a I2C stop signal
-  digitalWrite(SDA_PIN, HIGH);
-  digitalWrite(SDA_PIN, LOW);
 }
 
 void reset_pid_output(void)
@@ -456,82 +323,41 @@ void initServo(void)
   ICR3 = 0x1387;
   TCCR3A = 0b10101010;
   TCCR3B = 0b00011010;
-}void disable_mpu() {
-    mpu_set_dmp_state(0);
-    dmp_on = 0;
+}
+
+void disable_mpu() {
+  mpu_set_dmp_state(0);
+  dmp_on = 0;
 }
 
 void enable_mpu() {
-
-    mpu_set_dmp_state(1);  // This enables the DMP; at this point, interrupts should commence
-    dmp_on = 1;
-}  
-
-boolean run_mpu_self_test(boolean& gyro_ok, boolean& accel_ok) {
-  
-    int result;
-    long gyro[3], accel[3];
-    boolean success = false;
-
-    gyro_ok = false;
-    accel_ok = false;
-    result = mpu_run_self_test(gyro, accel);
-    if ( ( result & 0x1 ) != 0 ) {
-      // Gyro passed self test
-      gyro_ok = true;
-      float sens;
-      mpu_get_gyro_sens(&sens);
-      gyro[0] = (long)(gyro[0] * sens);
-      gyro[1] = (long)(gyro[1] * sens);
-      gyro[2] = (long)(gyro[2] * sens);
-      dmp_set_gyro_bias(gyro);
-    }
-    if ( ( result & 0x2 ) != 0 ) {
-      // Accelerometer passed self test
-      accel_ok = true;
-      unsigned short accel_sens;
-      mpu_get_accel_sens(&accel_sens);
-      accel[0] *= accel_sens;
-      accel[1] *= accel_sens;
-      accel[2] *= accel_sens;
-      dmp_set_accel_bias(accel);
-    }
-
-    success = gyro_ok && accel_ok;
-  
-    return success;
-}
-
-void getEuler(float *data, Quaternion *q) {
-
-    data[0] = atan2(2*q -> x*q -> y - 2*q -> w*q -> z, 2*q -> w*q -> w + 2*q -> x*q -> x - 1);   // psi
-    data[1] = -asin(2*q -> x*q -> z + 2*q -> w*q -> y);                              // theta
-    data[2] = atan2(2*q -> y*q -> z - 2*q -> w*q -> x, 2*q -> w*q -> w + 2*q -> z*q -> z - 1);   // phi
+  mpu_set_dmp_state(1);  // This enables the DMP; at this point, interrupts should commence
+  dmp_on = 1;
 }
 
 void getGravity(struct FloatVectorStruct *v, Quaternion *q) {
 
-    v -> x = 2 * (q -> x*q -> z - q -> w*q -> y);
-    v -> y = 2 * (q -> w*q -> x + q -> y*q -> z);
-    v -> z = q -> w*q -> w - q -> x*q -> x - q -> y*q -> y + q -> z*q -> z;
+  v -> x = 2 * (q -> x * q -> z - q -> w * q -> y);
+  v -> y = 2 * (q -> w * q -> x + q -> y * q -> z);
+  v -> z = q -> w * q -> w - q -> x * q -> x - q -> y * q -> y + q -> z * q -> z;
 }
 
 void dmpGetYawPitchRoll(float *data, Quaternion *q, struct FloatVectorStruct *gravity) {
-  
-    // yaw: (about Z axis)
-    data[0] = atan2(2*q -> x*q -> y - 2*q -> w*q -> z, 2*q -> w*q -> w + 2*q -> x*q -> x - 1);
-    // pitch: (nose up/down, about Y axis)
-    data[1] = atan(gravity -> x / sqrt(gravity -> y*gravity -> y + gravity -> z*gravity -> z));
-    // roll: (tilt left/right, about X axis)
-    data[2] = atan(gravity -> y / sqrt(gravity -> x*gravity -> x + gravity -> z*gravity -> z));
+
+  // yaw: (about Z axis)
+  data[0] = atan2(2 * q -> x * q -> y - 2 * q -> w * q -> z, 2 * q -> w * q -> w + 2 * q -> x * q -> x - 1);
+  // pitch: (nose up/down, about Y axis)
+  data[1] = atan(gravity -> x / sqrt(gravity -> y * gravity -> y + gravity -> z * gravity -> z));
+  // roll: (tilt left/right, about X axis)
+  data[2] = atan(gravity -> y / sqrt(gravity -> x * gravity -> x + gravity -> z * gravity -> z));
 }
 
 void print_sensors(void) {
+#ifdef VERBOSE_DEBUG
   Serial.print(F("t : "));
   Serial.println(millis());
   Serial.print(F("gx : "));
   Serial.println(gyro_x);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("gy : "));
   Serial.println(gyro_y);
   Serial.print(F("adj_accel_z : "));
@@ -666,9 +492,9 @@ void set_servos(void)
   regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
   ESC_D_REG = regVal;
 
+#ifdef VERBOSE_DEBUG
   Serial.print(F("ac : "));
   Serial.println(v_ac);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("bd : "));
   Serial.println(v_bd);
   Serial.print(F("vel : "));
@@ -734,7 +560,7 @@ void process(void)
 {
   char command = Console.read();
   Serial.println(command);
-  
+
   if (command == 'x') {
     repos_remaining_time = 0;
     did_takeoff = 0;
