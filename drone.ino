@@ -8,6 +8,7 @@
 
 #define EMPL_TARGET_ATMEGA328
 #include <Wire.h>
+#include <I2Cdev.h>
 #include <math.h>
 #include <PID_v1.h>
 #include <helper_3dmath.h>
@@ -15,8 +16,6 @@ extern "C" {
 #include <inv_mpu.h>
 #include <inv_mpu_dmp_motion_driver.h>
 }
-#include <Console.h>
-#include <FileIO.h>
 
 //#define VERBOSE_DEBUG
 
@@ -33,7 +32,7 @@ extern "C" {
 #define YAW_D_VAL 1
 
 #define SDA_PIN               2
-#define SCL_PIN               2
+#define SCL_PIN               3
 #define ACCEL_ON        (0x01)
 #define GYRO_ON         (0x02)
 /* Starting sampling rate. */
@@ -91,7 +90,9 @@ int did_takeoff = 0;
 int doing_takeoff = 0;
 
 /* NAV6 code */
-unsigned char new_gyro, dmp_on;
+unsigned char dmp_on;
+
+volatile unsigned char new_gyro;
 volatile boolean compass_data_ready = false;
 void compassDataAvailable() {
   compass_data_ready = true;
@@ -149,21 +150,15 @@ PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIREC
 PID yawPID(&yaw, &bal_axes, &zero_value, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
 
 void setup() {
+  resetI2C();
+
   Wire.begin();
 
   Serial.begin(115200);
-
-  initServo();
+  
+  //initServo();
 
   arm(0);
-
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
-  Bridge.begin();
-  Console.begin();
-  FileSystem.begin();
-  delay(5000);
-  digitalWrite(13, LOW);
 
   xPID.SetMode(AUTOMATIC);
   xPID.SetSampleTime(PID_SAMPLE_PERIOD);
@@ -177,10 +172,10 @@ void setup() {
   initMPU();
 }
 
-
-
 void loop() {
+  Serial.println("howdi");
   if (new_gyro && dmp_on) {
+    Serial.println("hello");
     short gyro[3], accel[3], sensors;
     unsigned char more = 0;
     long quat[4];
@@ -199,6 +194,7 @@ void loop() {
      */
     int success = dmp_read_fifo(gyro, accel, quat, &sensor_timestamp, &sensors,
                                 &more);
+    
     if (!more)
       new_gyro = 0;
 
@@ -218,6 +214,8 @@ void loop() {
       boolean accumulate = false;
       if ( calibration_state == NAV6_CALIBRATION_STATE_WAIT ) {
 
+        digitalWrite(13, HIGH);
+
         if ( millis() >= STARTUP_CALIBRATION_DELAY_MS ) {
 
           calibration_state = NAV6_CALIBRATION_STATE_ACCUMULATE;
@@ -235,6 +233,7 @@ void loop() {
           calibrated_quaternion_offset[2] = quaternion_accumulator[2] / calibration_accumulator_count;
           calibrated_quaternion_offset[3] = quaternion_accumulator[3] / calibration_accumulator_count;
           calibration_state = NAV6_CALIBRATION_STATE_COMPLETE;
+          digitalWrite(13, LOW);
         }
         else {
 
@@ -262,46 +261,47 @@ void loop() {
       yaw = x;
       accel_z = 0;
 
-      if (did_takeoff || doing_takeoff)
-        position_adjust();
+      //if (did_takeoff || doing_takeoff)
+      //  position_adjust();
 
-      if (Console.available()) {
-        process();
+      //if (Serial.available()) {
+      //  process();
+      //}
+
+    }
+    else {
+
+      /* The following debug print outs are useful
+         if DMP fifo streaming is not working or
+         data is being lost.
+
+         If modifying code, it's a good idea to check that
+         the "FIFO OVERFLOW" error does not occur, since
+         this case can occur if too many cycles are used
+         to keep up with the sensor data stream.
+
+      if ( success == -1 )
+      {
+        Serial.println("DMP DISABLED!!!");
       }
+      else if ( success == -2 )
+      {
+        Serial.println("I2C READ ERROR");
+      }
+      else if ( success == -3 )
+      {
+        Serial.println("FIFO OVERFLOW ERROR!!!");
+      }
+      else if ( success == -4 )
+      {
+        Serial.println("NO_SENSORS");
+      }
+      else if ( success == -6 )
+      {
+        Serial.println("CORRUPTED_QUATERNION");
+      }
+      */
     }
-  }
-  else {
-
-    /* The following debug print outs are useful
-       if DMP fifo streaming is not working or
-       data is being lost.
-
-       If modifying code, it's a good idea to check that
-       the "FIFO OVERFLOW" error does not occur, since
-       this case can occur if too many cycles are used
-       to keep up with the sensor data stream.
-
-    if ( success == -1 )
-    {
-      Serial.println("DMP DISABLED!!!");
-    }
-    else if ( success == -2 )
-    {
-      Serial.println("I2C READ ERROR");
-    }
-    else if ( success == -3 )
-    {
-      Serial.println("FIFO OVERFLOW ERROR!!!");
-    }
-    else if ( success == -4 )
-    {
-      Serial.println("NO_SENSORS");
-    }
-    else if ( success == -6 )
-    {
-      Serial.println("CORRUPTED_QUATERNION");
-    }
-    */
   }
 }
 
@@ -392,6 +392,45 @@ void initMPU() {
   digitalWrite(13, LOW);
 }
 
+void resetI2C(void)
+{
+  // reset I2C bus
+  // This ensures that if the nav6 was reset, but the devices
+  // on the I2C bus were not, that any transfer in progress do
+  // not hang the device/bus.  Since the MPU-6050 has a 1024-byte
+  // fifo, and there are 8 bits/byte, 10,000 clock edges
+  // are generated to ensure the fifo is completely cleared
+  // in the worst case.
+
+  pinMode(SDA_PIN, INPUT);
+  pinMode(SCL_PIN, OUTPUT);
+  pinMode(13, OUTPUT);
+
+  digitalWrite(13, LOW);
+
+  // Clock through up to 1000 bits
+  int x = 0;
+  for ( int i = 0; i < 10000; i++ ) {
+
+    digitalWrite(SCL_PIN, HIGH);
+    digitalWrite(SCL_PIN, LOW);
+    digitalWrite(SCL_PIN, HIGH);
+
+    x++;
+    if ( x == 8 ) {
+      x = 0;
+      // send a I2C stop signal
+      digitalWrite(SDA_PIN, HIGH);
+      digitalWrite(SDA_PIN, LOW);
+    }
+  }
+
+  // send a I2C stop signal
+  digitalWrite(SDA_PIN, HIGH);
+  digitalWrite(SDA_PIN, LOW);
+}
+
+
 boolean initialize_mpu() {
   int result;
   struct int_param_s int_param;
@@ -400,13 +439,16 @@ boolean initialize_mpu() {
    * Every function preceded by mpu_ is a driver function and can be found
    * in inv_mpu.h.
    */
+  pinMode(7, INPUT);
   int_param.cb = gyro_data_ready_cb;
-  int_param.pin = 0;
+  int_param.pin = 4;
   result = mpu_init(&int_param);
-
   if (result != 0) {
+    Serial.println("failed");
     return false;
   }
+
+  disable_mpu();
 
   /* Get/set hardware configuration. Start gyro. */
   /* Wake up all sensors. */
@@ -451,7 +493,9 @@ boolean initialize_mpu() {
    */
   result = dmp_load_motion_driver_firmware();
   if ( result != 0 ) {
-    Serial.print("E.");
+    Serial.println("E.");
+    Serial.println(result);
+    Serial.println(dmp_update_rate);
     return false;
   }
   dmp_set_orientation(0x88);
@@ -558,7 +602,7 @@ void arm(int delay_req)
 
 void process(void)
 {
-  char command = Console.read();
+  char command = Serial.read();
   Serial.println(command);
 
   if (command == 'x') {
