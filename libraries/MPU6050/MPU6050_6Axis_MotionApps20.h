@@ -130,10 +130,10 @@ uint8_t MPU6050::dmpInitialize() {
     DEBUG_PRINTLN(otpValid ? F("valid!") : F("invalid!"));
 
     // get X/Y/Z gyro offsets
-    DEBUG_PRINTLN(F("Reading gyro offset values..."));
-    int8_t xgOffset = getXGyroOffset();
-    int8_t ygOffset = getYGyroOffset();
-    int8_t zgOffset = getZGyroOffset();
+    DEBUG_PRINTLN(F("Reading gyro offset TC values..."));
+    int8_t xgOffsetTC = getXGyroOffsetTC();
+    int8_t ygOffsetTC = getYGyroOffsetTC();
+    int8_t zgOffsetTC = getZGyroOffsetTC();
     DEBUG_PRINT(F("X gyro offset = "));
     DEBUG_PRINTLN(xgOffset);
     DEBUG_PRINT(F("Y gyro offset = "));
@@ -191,15 +191,15 @@ uint8_t MPU6050::dmpInitialize() {
             DEBUG_PRINTLN(F("Clearing OTP Bank flag..."));
             setOTPBankValid(false);
 
-            DEBUG_PRINTLN(F("Setting X/Y/Z gyro offsets to previous values..."));
-            setXGyroOffset(xgOffset);
-            setYGyroOffset(ygOffset);
-            setZGyroOffset(zgOffset);
+            DEBUG_PRINTLN(F("Setting X/Y/Z gyro offset TCs to previous values..."));
+            setXGyroOffsetTC(xgOffsetTC);
+            setYGyroOffsetTC(ygOffsetTC);
+            setZGyroOffsetTC(zgOffsetTC);
 
-            DEBUG_PRINTLN(F("Setting X/Y/Z gyro user offsets to zero..."));
-            setXGyroOffsetUser(0);
-            setYGyroOffsetUser(0);
-            setZGyroOffsetUser(0);
+            //DEBUG_PRINTLN(F("Setting X/Y/Z gyro user offsets to zero..."));
+            //setXGyroOffset(0);
+            //setYGyroOffset(0);
+            //setZGyroOffset(0);
 
             DEBUG_PRINTLN(F("Writing final memory update 1/7 (function unknown)..."));
             uint8_t dmpUpdate[16], j;
@@ -214,7 +214,7 @@ uint8_t MPU6050::dmpInitialize() {
             resetFIFO();
 
             DEBUG_PRINTLN(F("Reading FIFO count..."));
-            uint8_t fifoCount = getFIFOCount();
+            uint16_t fifoCount = getFIFOCount();
             uint8_t fifoBuffer[128];
 
             DEBUG_PRINT(F("Current FIFO count="));
@@ -273,8 +273,6 @@ uint8_t MPU6050::dmpInitialize() {
             dmpInitHelper(&file, dmpUpdate, false);
             readMemoryBlock(dmpUpdate + 3, dmpUpdate[2], dmpUpdate[0], dmpUpdate[1]);
 
-			file.close();
-			
             DEBUG_PRINTLN(F("Waiting for FIFO count > 2..."));
             while ((fifoCount = getFIFOCount()) < 3);
 
@@ -292,6 +290,7 @@ uint8_t MPU6050::dmpInitialize() {
 
             DEBUG_PRINTLN(F("Writing final memory update 7/7 (function unknown)..."));
             dmpInitHelper(&file, dmpUpdate);
+			file.close();
             DEBUG_PRINTLN(F("DMP is good to go! Finally."));
 
             DEBUG_PRINTLN(F("Disabling DMP (you turn it on later)..."));
@@ -420,10 +419,10 @@ uint8_t MPU6050::dmpGetGyro(int16_t *data, const uint8_t* packet) {
 // uint8_t MPU6050::dmpSetLinearAccelFilterCoefficient(float coef);
 // uint8_t MPU6050::dmpGetLinearAccel(long *data, const uint8_t* packet);
 uint8_t MPU6050::dmpGetLinearAccel(VectorInt16 *v, VectorInt16 *vRaw, VectorFloat *gravity) {
-    // get rid of the gravity component (+1g = +4096 in standard DMP FIFO packet)
-    v -> x = vRaw -> x - gravity -> x*4096;
-    v -> y = vRaw -> y - gravity -> y*4096;
-    v -> z = vRaw -> z - gravity -> z*4096;
+    // get rid of the gravity component (+1g = +8192 in standard DMP FIFO packet, sensitivity is 2g)
+    v -> x = vRaw -> x - gravity -> x*8192;
+    v -> y = vRaw -> y - gravity -> y*8192;
+    v -> z = vRaw -> z - gravity -> z*8192;
     return 0;
 }
 // uint8_t MPU6050::dmpGetLinearAccelInWorld(long *data, const uint8_t* packet);
