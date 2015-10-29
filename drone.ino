@@ -1,13 +1,13 @@
 /* much code from the following sites
  *  
  *  https://github.com/strangedev/Arduino-Quadcopter
- *  400Hz PWM code from somewhere T_T (don't remember)
+ *  http://andrea-toscano.com/400hz-pwm-on-atmega32u4-for-multirotors-without-using-servo-library/
  *  
  */
 
+#include <I2Cdev.h>
 #include <Wire.h>
 #include <PID_v1.h>
-#include <I2Cdev.h>
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
 #include <Console.h>
@@ -15,8 +15,8 @@
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            4
-#define PID_GYRO_I            14
+#define PID_GYRO_P            1.5
+#define PID_GYRO_I            0
 #define PID_GYRO_D            0
 
 #define PID_ACCEL_P           1
@@ -104,11 +104,15 @@ PID yawPID(&yaw, &bal_axes, &zero_value, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT
 void setup() {
   Serial.begin(115200);
 
+  Wire.begin();
+  TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz)
+  
   initServo();
   
   arm(0);
 
   pinMode(13, OUTPUT);
+  pinMode(7, INPUT);
   digitalWrite(13, HIGH);
   Bridge.begin();
   Console.begin();
@@ -130,11 +134,7 @@ void setup() {
 
 void loop() {
   while(!mpuInterrupt && fifoCount < packetSize){
-
-    /* Do nothing while MPU is not working
-     * This should be a VERY short period
-     */
-      
+    delay(1);      
   }
   if (!getYPR())
     return;  
@@ -196,10 +196,8 @@ void print_sensors(void) {
 #ifdef VERBOSE_DEBUG
   Serial.print(F("t : "));
   Serial.println(millis());
-#endif
   Serial.print(F("gx : "));
   Serial.println(gyro_x);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("gy : "));
   Serial.println(gyro_y);
   Serial.print(F("adj_accel_z : "));
@@ -212,14 +210,13 @@ void print_sensors(void) {
 void initMPU(){
   int i;
   
-  Wire.begin();
   mpu.initialize();
   in_error = mpu.dmpInitialize();
   if(in_error == 0){
-    mpu.setDMPEnabled(true);
     attachInterrupt(4, dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
+    mpu.setDMPEnabled(true);
   } else {
     Serial.println(F("E."));
     digitalWrite(13, 1);
@@ -259,9 +256,9 @@ void set_servos(void)
   regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
   ESC_D_REG = regVal;
 
+#ifdef VERBOSE_DEBUG
   Serial.print(F("ac : "));
   Serial.println(v_ac);
-#ifdef VERBOSE_DEBUG
   Serial.print(F("bd : "));
   Serial.println(v_bd);
   Serial.print(F("vel : "));
