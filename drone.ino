@@ -10,14 +10,20 @@
 #include <PID_v1.h>
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
-#include <Console.h>
-#include <FileIO.h>
 
 //#define VERBOSE_DEBUG
 
-#define PID_GYRO_P            1.5
-#define PID_GYRO_I            0
-#define PID_GYRO_D            0
+//4.8
+#define PID_GYRO_P            4.7
+//4.5
+
+//0.01
+#define PID_GYRO_I            0.9
+
+
+//0.02
+#define PID_GYRO_D            2.5
+//0.015
 
 #define PID_ACCEL_P           1
 #define PID_ACCEL_I           0.8
@@ -29,7 +35,7 @@
 
 #define PID_SAMPLE_PERIOD     10
 
-#define PRESAMPLE_COUNT     1500
+#define PRESAMPLE_COUNT     500
 #define PRESAMPLE_STABLE_CHECK  30
 #define PRESAMPLE_STABLE_TOLERANCE  100.0
 
@@ -39,15 +45,24 @@
 #define ESC_MIN               88
 #define ESC_WORKING_MIN       160
 #define ESC_MAX               460
-#define ESC_ARM_DELAY         5000
-  
-#define ESC_A_REG OCR1C // PIN 11
-#define ESC_B_REG OCR1B // PIN 10
-#define ESC_C_REG OCR1A // PIN 9
-#define ESC_D_REG OCR3A // PIN 5
+#define ESC_ARM_DELAY         500
 
-#define ESC_REG_MIN 1400
-#define ESC_REG_MAX 3800
+#define INTERRUPT_PIN 2
+
+#define ESC_A    12
+#define ESC_B    11
+#define ESC_C    8
+#define ESC_D    7
+#define ESC_T    6
+
+#define ESC_A_REG  OCR1B
+#define ESC_B_REG  OCR1A
+#define ESC_C_REG  OCR4C
+#define ESC_D_REG  OCR4B
+#define ESC_T_REG  OCR4A
+
+#define ESC_REG_HIGH  3800
+#define ESC_REG_LOW   2100
 
 #define TAKEOFF_Z_ACCEL       (-0.05)
 #define TAKEOFF_THROTTLE_STEP 0.03
@@ -106,20 +121,16 @@ void setup() {
 
   Wire.begin();
   TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz)
-  
-  initServo();
-  
-  arm(0);
 
   pinMode(13, OUTPUT);
-  pinMode(7, INPUT);
-  digitalWrite(13, HIGH);
-  Bridge.begin();
-  Console.begin();
-  FileSystem.begin();
-  delay(5000);
-  digitalWrite(13, LOW);
-  
+
+  Serial.println(F("Init Servos.."));
+  initServo();
+
+  Serial.println(F("Arming.."));
+  arm(0);
+
+  Serial.println(F("Init PID.."));
   xPID.SetMode(AUTOMATIC);
   xPID.SetSampleTime(PID_SAMPLE_PERIOD);
   xPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
@@ -129,13 +140,16 @@ void setup() {
   vPID.SetMode(AUTOMATIC);
   vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
 
+  Serial.println(F("MPU init.."));
   initMPU();
 }
 
 void loop() {
+  digitalWrite(13, LOW);
   while(!mpuInterrupt && fifoCount < packetSize){
-    delay(1);      
+    
   }
+  digitalWrite(13, HIGH);
   if (!getYPR())
     return;  
   count_presample();
@@ -143,7 +157,7 @@ void loop() {
   if((did_takeoff || doing_takeoff) && !in_error)
     position_adjust();
   
-  if (Console.available()) {
+  if (Serial.available()) {
     process();
   }
 }
@@ -158,14 +172,25 @@ void reset_pid_output(void)
 
 void initServo(void)
 {
-  DDRB |= (1 << 7) | (1 << 6) | (1 << 5);
-  ICR1 = 0x1387;  // 400Hz
+  pinMode(ESC_A, OUTPUT);
+  pinMode(ESC_B, OUTPUT);
+  pinMode(ESC_C, OUTPUT);
+  pinMode(ESC_D, OUTPUT);
+
+  delay(500);
+
+  ICR1 = 0x1387;
   TCCR1A = 0b10101010;
   TCCR1B = 0b00011010;
-  DDRC |= (1 << PC6); // motor3  PWM Port.
-  ICR3 = 0x1387; 
-  TCCR3A = 0b10101010;
-  TCCR3B = 0b00011010;
+  ICR4 = 0x1387;
+  TCCR4A = 0b10101010;
+  TCCR4B = 0b00011010;
+  
+  ESC_A_REG = ESC_REG_LOW;
+  ESC_B_REG = ESC_REG_LOW;
+  ESC_C_REG = ESC_REG_LOW;
+  ESC_D_REG = ESC_REG_LOW;
+  ESC_T_REG = ESC_REG_LOW;
 }
 
 void count_presample(void)
@@ -176,6 +201,7 @@ void count_presample(void)
     presample_count --;
     if (presample_count % 100 == 50) digitalWrite(13, LOW);
     if (presample_count % 100 == 1) digitalWrite(13, HIGH);
+    if (presample_count % 100 == 0) Serial.println(presample_count / 100);
   } else if (presample_count == PRESAMPLE_STABLE_CHECK) {
     presample_count --;
     resample_sensor = true;
@@ -213,7 +239,7 @@ void initMPU(){
   mpu.initialize();
   in_error = mpu.dmpInitialize();
   if(in_error == 0){
-    attachInterrupt(4, dmpDataReady, RISING);
+    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
     mpu.setDMPEnabled(true);
@@ -247,13 +273,13 @@ void set_servos(void)
   if (vc < ESC_WORKING_MIN) vc = ESC_WORKING_MIN;
   if (vd < ESC_WORKING_MIN) vd = ESC_WORKING_MIN;
   
-  regVal = map(va, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  regVal = map(va, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_A_REG = regVal;
-  regVal = map(vb, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  regVal = map(vb, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_B_REG = regVal;
-  regVal = map(vc, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  regVal = map(vc, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_C_REG = regVal;
-  regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_MIN, ESC_REG_MAX);
+  regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_D_REG = regVal;
 
 #ifdef VERBOSE_DEBUG
@@ -305,7 +331,6 @@ void position_adjust(void)
     hover_throttle += TAKEOFF_THROTTLE_STEP;
   }
   
-  print_sensors();  
   set_servos();
 }
 
@@ -347,12 +372,14 @@ boolean getYPR(){
     yprLast[1] = ypr[1];
     yprLast[2] = ypr[2];
 
-    gyro_x = - ypr[2];
-    gyro_y = ypr[1];
+    gyro_x = ypr[2];
+    gyro_y = - ypr[1];
     yaw = ypr[0] - orig_yaw;
 
     mpu.dmpGetAccel(accel_data, fifoBuffer);
     accel_z = ((double)accel_data[2]) / 100.0 - orig_accel_z;
+
+    print_sensors();
 
     return true;
   }
@@ -360,10 +387,10 @@ boolean getYPR(){
 
 void arm(int delay_req)
 {
-  ESC_A_REG = ESC_REG_MIN;
-  ESC_B_REG = ESC_REG_MIN;
-  ESC_C_REG = ESC_REG_MIN;
-  ESC_D_REG = ESC_REG_MIN;
+  ESC_A_REG = ESC_REG_LOW;
+  ESC_B_REG = ESC_REG_LOW;
+  ESC_C_REG = ESC_REG_LOW;
+  ESC_D_REG = ESC_REG_LOW;
   
   if (delay_req)
     delay(ESC_ARM_DELAY);
@@ -371,7 +398,7 @@ void arm(int delay_req)
 
 void process(void)
 {
-  char command = Console.read();
+  char command = Serial.read();
   Serial.println(command);
   if (presample_count > 0) {
     Serial.println(F("NR."));
