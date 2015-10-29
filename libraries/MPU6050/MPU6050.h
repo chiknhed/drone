@@ -38,9 +38,8 @@ THE SOFTWARE.
 #define _MPU6050_H_
 
 #include "I2Cdev.h"
-#include <avr/pgmspace.h>
+//#include <avr/pgmspace.h>
 
-class File;
 
 
 #define MPU6050_ADDRESS_AD0_LOW     0x68 // address pin low (GND), default for InvenSense evaluation board
@@ -784,7 +783,6 @@ class MPU6050 {
 
             uint8_t dmpInitialize();
             bool dmpPacketAvailable();
-			void dmpInitHelper(File * pFile, uint8_t * dmpUpdate, bool isWrite = true);
 
             uint8_t dmpSetFIFORate(uint8_t fifoRate);
             uint8_t dmpGetFIFORate();
