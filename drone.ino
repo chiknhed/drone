@@ -1,4 +1,4 @@
-/* much code from the following sites
+/*
  *  
  *  https://github.com/strangedev/Arduino-Quadcopter
  *  http://andrea-toscano.com/400hz-pwm-on-atmega32u4-for-multirotors-without-using-servo-library/
@@ -10,6 +10,7 @@
 #include <PID_v1.h>
 #include <helper_3dmath.h>
 #include <MPU6050_6Axis_MotionApps20.h>
+#include <PinChangeInt.h>
 
 //#define VERBOSE_DEBUG
 
@@ -33,21 +34,49 @@
 #define YAW_I_VAL 5
 #define YAW_D_VAL 1
 
-#define PID_SAMPLE_PERIOD     10
+#define RC_1  A9
+#define RC_2  A10
+#define RC_3  A11
+#define RC_4  A12
+#define RC_5  A13
+#define RC_6  A14
+#define RC_7  A15
+
+#define PID_SAMPLE_PERIOD     5
 
 #define PRESAMPLE_COUNT     500
 #define PRESAMPLE_STABLE_CHECK  30
 #define PRESAMPLE_STABLE_TOLERANCE  100.0
-
-#define REPOSITION_PERIOD_MS  30ul
-#define MOVE_DURATION_MS      2000
 
 #define ESC_MIN               88
 #define ESC_WORKING_MIN       160
 #define ESC_MAX               460
 #define ESC_ARM_DELAY         500
 
-#define INTERRUPT_PIN 2
+/* RC configuration */
+#define RC_HIGH_CH1            1844
+#define RC_LOW_CH1             1032
+#define RC_HIGH_CH2            1856
+#define RC_LOW_CH2             1032
+#define RC_HIGH_CH3            1800
+#define RC_LOW_CH3             1032
+#define RC_HIGH_CH4           1840
+#define RC_LOW_CH4             1032
+#define RC_HIGH_CH5            1900
+#define RC_LOW_CH5             1700
+
+
+#define RC_ROUNDING_BASE      50
+
+/* Fligh parameters */
+#define PITCH_MIN             -15
+#define PITCH_MAX             15
+#define ROLL_MIN      -15
+#define ROLL_MAX      15
+#define YAW_MIN       -90
+#define YAW_MAX       90
+
+#define MPU_INT_PIN 2
 
 #define ESC_A    12
 #define ESC_B    11
@@ -64,41 +93,28 @@
 #define ESC_REG_HIGH  3800
 #define ESC_REG_LOW   2100
 
-#define TAKEOFF_Z_ACCEL       (-0.05)
-#define TAKEOFF_THROTTLE_STEP 0.03
-#define TAKEOFF_GOUP_DELAY    5000
-
 #define PID_XY_INFLUENCE    30.0
 #define PID_THROTTLE_INFLUENCE  50.0
 
-#define UPDOWN_MULT_FACTOR  (0.1)
-#define MOVE_MULT_FACTOR    (10)
-
-
-double orig_accel_z = 0;
 double orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
-double hover_throttle = ESC_WORKING_MIN;
-boolean hover_found = false;
-
-unsigned long repos_last_time;
-unsigned long repos_remaining_time;
-
 double v_ac, v_bd, velocity, bal_axes;
-double zero_value = 0.0;
+double yaw_target;
 
 int presample_count  = PRESAMPLE_COUNT;
 boolean resample_sensor = false;
 
 MPU6050 mpu;
 Quaternion q;                          // quaternion for mpu output
-VectorFloat gravity;                   // gravity vector for ypr
+VectorFloat gravity;
 int16_t accel_data[3];
 float ypr[3] = {0.0f,0.0f,0.0f};       // yaw pitch roll values
 float yprLast[3] = {0.0f, 0.0f, 0.0f};
 double yaw;
+
+volatile bool interruptLock = false;
 
 uint8_t mpuIntStatus;                  // mpu statusbyte
 uint8_t in_error;                     // device status    
@@ -108,15 +124,33 @@ uint8_t fifoBuffer[64];                // fifo buffer
 
 volatile bool mpuInterrupt = false;    //interrupt flag
 
-int did_takeoff = 0;
-int doing_takeoff = 0;
+double ch1, ch2, ch3, ch4, ch5;
+int ch6, ch7;
+unsigned long rcLastChange1 = micros();
+unsigned long rcLastChange2 = micros();
+unsigned long rcLastChange3 = micros();
+unsigned long rcLastChange4 = micros();
+unsigned long rcLastChange5 = micros();
+unsigned long rcLastChange6 = micros();
+unsigned long rcLastChange7 = micros();
 
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, PID_GYRO_P, PID_GYRO_I, PID_GYRO_D, DIRECT);
-PID vPID(&accel_z, &velocity, &adj_accel_z, PID_ACCEL_P, PID_ACCEL_I, PID_ACCEL_D, REVERSE);
-PID yawPID(&yaw, &bal_axes, &zero_value, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
+double ch1Last = 0.0;
+double ch2Last = 0.0;
+double ch4Last = 0.0;
+double velocityLast = 0.0;
+
+bool engine_on = false;
+
+double pid_gyro_p = PID_GYRO_P;
+double pid_gyro_i = PID_GYRO_I;
+
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, pid_gyro_p, pid_gyro_i, PID_GYRO_D, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, pid_gyro_p, pid_gyro_i, PID_GYRO_D, DIRECT);
+PID yawPID(&yaw, &bal_axes, &yaw_target, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
 
 void setup() {
+  initRC();
+  
   Serial.begin(115200);
 
   Wire.begin();
@@ -128,7 +162,7 @@ void setup() {
   initServo();
 
   Serial.println(F("Arming.."));
-  arm(0);
+  arm(1);
 
   Serial.println(F("Init PID.."));
   xPID.SetMode(AUTOMATIC);
@@ -137,8 +171,6 @@ void setup() {
   yPID.SetMode(AUTOMATIC);
   yPID.SetSampleTime(PID_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
-  vPID.SetMode(AUTOMATIC);
-  vPID.SetOutputLimits(-PID_THROTTLE_INFLUENCE, PID_THROTTLE_INFLUENCE);
 
   Serial.println(F("MPU init.."));
   initMPU();
@@ -154,12 +186,8 @@ void loop() {
     return;  
   count_presample();
   
-  if((did_takeoff || doing_takeoff) && !in_error)
+  if(!in_error)
     position_adjust();
-  
-  if (Serial.available()) {
-    process();
-  }
 }
 
 void reset_pid_output(void)
@@ -218,28 +246,21 @@ void count_presample(void)
   }
 }
 
-void print_sensors(void) {
-#ifdef VERBOSE_DEBUG
-  Serial.print(F("t : "));
-  Serial.println(millis());
-  Serial.print(F("gx : "));
-  Serial.println(gyro_x);
-  Serial.print(F("gy : "));
-  Serial.println(gyro_y);
-  Serial.print(F("adj_accel_z : "));
-  Serial.println(adj_accel_z);
-  Serial.print(F("accel_z : "));
-  Serial.println(accel_z);
-#endif
-}
-
 void initMPU(){
   int i;
   
   mpu.initialize();
   in_error = mpu.dmpInitialize();
+  
+  mpu.setXAccelOffset(-215);
+  mpu.setYAccelOffset(-1991);
+  mpu.setZAccelOffset(687);
+  mpu.setXGyroOffset(79);
+  mpu.setYGyroOffset(-33);
+  mpu.setZGyroOffset(67);
+  
   if(in_error == 0){
-    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
+    attachInterrupt(digitalPinToInterrupt(MPU_INT_PIN), dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
     mpu.setDMPEnabled(true);
@@ -258,21 +279,28 @@ void set_servos(void)
   int va, vb, vc, vd;
   int regVal;
 
-  va = (hover_throttle + velocity) * ((100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
-  vb = (hover_throttle + velocity) * ((100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
-  vc = (hover_throttle + velocity) * (abs(-100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
-  vd = (hover_throttle + velocity) * (abs(-100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
-  
+  va = velocity * ((100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
+  vb = velocity * ((100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
+  vc = velocity * (abs(-100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
+  vd = velocity * (abs(-100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
+
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
   if (vc > ESC_MAX) vc = ESC_MAX;
   if (vd > ESC_MAX) vd = ESC_MAX;
 
-  if (va < ESC_WORKING_MIN) va = ESC_WORKING_MIN;
-  if (vb < ESC_WORKING_MIN) vb = ESC_WORKING_MIN;
-  if (vc < ESC_WORKING_MIN) vc = ESC_WORKING_MIN;
-  if (vd < ESC_WORKING_MIN) vd = ESC_WORKING_MIN;
-  
+  if (va < ESC_MIN) va = ESC_MIN;
+  if (vb < ESC_MIN) vb = ESC_MIN;
+  if (vc < ESC_MIN) vc = ESC_MIN;
+  if (vd < ESC_MIN) vd = ESC_MIN;
+
+  if (!engine_on) {
+    va = ESC_MIN; 
+    vb = ESC_MIN;
+    vc = ESC_MIN;
+    vd = ESC_MIN;
+  }
+
   regVal = map(va, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_A_REG = regVal;
   regVal = map(vb, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
@@ -282,14 +310,27 @@ void set_servos(void)
   regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_D_REG = regVal;
 
-#ifdef VERBOSE_DEBUG
+#if 0
+  Serial.print(F("t : "));
+  Serial.println(millis());
+  Serial.print(F("gx : "));
+  Serial.println(gyro_x);
+  Serial.print(F("gy : "));
+  Serial.println(gyro_y);
+  Serial.print(F("adj_accel_z : "));
+  Serial.println(adj_accel_z);
+  Serial.print(F("accel_z : "));
+  Serial.println(accel_z);
   Serial.print(F("ac : "));
   Serial.println(v_ac);
   Serial.print(F("bd : "));
   Serial.println(v_bd);
   Serial.print(F("vel : "));
   Serial.println(velocity);
-  Serial.println();
+  Serial.print("va:"); Serial.println(va);
+  Serial.print("vb:"); Serial.println(vb);
+  Serial.print("vc:"); Serial.println(vc);
+  Serial.print("vd:"); Serial.println(vd);
 #endif
 }
 
@@ -297,39 +338,83 @@ void reset_adjust_variables(void)
 {
   adj_accel_z = 0;
   adj_gyro_x = adj_gyro_y  = 0;
-  repos_last_time = millis();
 }
 
 void position_adjust(void)
 {
-  unsigned long current_time;
-
-  if (!hover_found && accel_z < TAKEOFF_Z_ACCEL) {
-    hover_found = true;
-    doing_takeoff = 0;
-    did_takeoff = 1;
-    Serial.print(F("Hover found :"));
-    Serial.println(hover_throttle);
-  }
-
-  if (repos_last_time == 0) repos_last_time = millis();
-  current_time = millis();
+#if 0
+  Serial.print("CH1:");Serial.println(ch1);
+  Serial.print("CH2:");Serial.println(ch2);
+  Serial.print("CH3:");Serial.println(ch3);
+  Serial.print("CH4:");Serial.println(ch4);
+#endif
+  double temp_p, temp_i;
   
-  if (current_time - repos_last_time > repos_remaining_time) {
-    repos_remaining_time = 0;
-    reset_adjust_variables();
-  } else {
-    repos_remaining_time -= current_time - repos_last_time;
-    repos_last_time = current_time;
+  acquireLock();
+  ch1 = floor(ch1/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
+  ch2 = floor(ch2/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
+  ch3 = floor(ch3/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
+  ch4 = floor(ch4/10) * 10;
+  ch5 = floor(ch5/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
+
+  ch2 = map(ch2, RC_LOW_CH2, RC_HIGH_CH2, PITCH_MIN, PITCH_MAX);
+  ch1 = map(ch1, RC_LOW_CH1, RC_HIGH_CH1, ROLL_MIN, ROLL_MAX);
+  ch4 = map(ch4, RC_LOW_CH4, RC_HIGH_CH4, YAW_MIN, YAW_MAX);
+  velocity = map(ch3, RC_LOW_CH3, RC_HIGH_CH3, ESC_MIN, ESC_MAX);
+
+  if ((ch2 < PITCH_MIN) || (ch2 > PITCH_MAX)) ch2 = ch2Last;
+  if ((ch1 < ROLL_MIN) || (ch1 > ROLL_MAX)) ch1 = ch1Last;
+  if ((ch4 < YAW_MIN) || (ch4 > YAW_MAX)) ch4 = ch4Last;
+  if ((velocity < ESC_MIN) || (velocity > ESC_MAX)) velocity = velocityLast;
+
+  if (ch5 > RC_LOW_CH5 && ch5 < RC_HIGH_CH5) engine_on = 1;
+  else if (ch5 > 900 && ch5 < 1100) engine_on = 0;
+
+  ch1Last = ch1;
+  ch2Last = ch2;
+  ch4Last = ch4;
+  velocityLast = velocity;
+
+  adj_gyro_x = - ch2 - ch1;
+  adj_gyro_y = - ch2 + ch1;
+  yaw_target = ch4;
+
+  temp_p = ch6 - 1000 - ch6%10;
+  temp_p /= 100.0;
+  if (temp_p >= 0 && temp_p < 10 && temp_p != pid_gyro_p) {
+    pid_gyro_p = temp_p;
+#if 0
+    Serial.print(F("P:"));Serial.println(pid_gyro_p);
+#endif
+    xPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
+    yPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
   }
-  
-  if (hover_found) {
-    xPID.Compute();
-    yPID.Compute();
-    //vPID.Compute();
-  } else {
-    hover_throttle += TAKEOFF_THROTTLE_STEP;
+
+  temp_i = ch7 - 1000 - ch7%10;
+  temp_i /= 1000.0;
+  if (temp_i >= 0 && temp_i < 1 && temp_i != pid_gyro_i) {
+    pid_gyro_i = temp_i;
+#if 0
+    Serial.print(F("I:"));Serial.println(pid_gyro_i);
+#endif
+    xPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
+    yPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
   }
+  releaseLock();
+
+#if 0
+  Serial.print("CH5:"); Serial.println(ch5);
+  Serial.print(F("ch1:"));
+  Serial.println(ch1);
+  Serial.print(F("ch2:"));
+  Serial.println(ch2);
+  Serial.print(F("yaw_t:"));
+  Serial.println(yaw_target);
+#endif
+
+  xPID.Compute();
+  yPID.Compute();
+  yawPID.Compute();
   
   set_servos();
 }
@@ -355,7 +440,6 @@ boolean getYPR(){
     if (resample_sensor) {
       resample_sensor = false;
       orig_yaw = ypr[0] * 180 / M_PI;
-      orig_accel_z = ((double)accel_data[2]) / 100.0;
         
       Serial.println(F("R."));
     }
@@ -376,11 +460,6 @@ boolean getYPR(){
     gyro_y = - ypr[1];
     yaw = ypr[0] - orig_yaw;
 
-    mpu.dmpGetAccel(accel_data, fifoBuffer);
-    accel_z = ((double)accel_data[2]) / 100.0 - orig_accel_z;
-
-    print_sensors();
-
     return true;
   }
 }
@@ -396,63 +475,63 @@ void arm(int delay_req)
     delay(ESC_ARM_DELAY);
 }
 
-void process(void)
-{
-  char command = Serial.read();
-  Serial.println(command);
-  if (presample_count > 0) {
-    Serial.println(F("NR."));
-    return;
-  }
-  
-  if (command == 'x') {
-    repos_remaining_time = 0;
-    did_takeoff = 0;
-    doing_takeoff = 0;
-    reset_adjust_variables();
-    arm(0);
-  }
-
-  if (doing_takeoff) {
-    return;
-  }
-  
-  double param = 1.0;
-  if(command == 'p') {
-    if (!did_takeoff) {
-      hover_throttle = ESC_WORKING_MIN;
-      hover_found = false;
-      doing_takeoff = 1;
-      did_takeoff = 0;
-      reset_pid_output();
-      reset_adjust_variables();
-      repos_remaining_time = TAKEOFF_GOUP_DELAY;
-      resample_sensor = true;
-      adj_accel_z = - param * UPDOWN_MULT_FACTOR;
-    } else {
-      velocity += 5;
-      repos_remaining_time = MOVE_DURATION_MS;
-      adj_accel_z = - param * UPDOWN_MULT_FACTOR;
-    }
-  } if (command == 'l') {
-    velocity -= 5;
-    repos_remaining_time = MOVE_DURATION_MS;
-    adj_accel_z = param * UPDOWN_MULT_FACTOR;
-  }else if (command == 'w') {
-    repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = -param * MOVE_MULT_FACTOR;
-    adj_gyro_y = -param * MOVE_MULT_FACTOR;
-  } else if (command == 's') {
-    repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = param * MOVE_MULT_FACTOR;
-    adj_gyro_y = param * MOVE_MULT_FACTOR;
-  } else if (command == 'a') {
-    repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = -param * MOVE_MULT_FACTOR;
-    adj_gyro_y = param * MOVE_MULT_FACTOR;
-  } else if (command == 'd') {
-    repos_remaining_time = MOVE_DURATION_MS;
-    adj_gyro_x = param * MOVE_MULT_FACTOR;
-    adj_gyro_y = -param * MOVE_MULT_FACTOR;
-  }
+void initRC() {
+  pinMode(RC_1, INPUT);
+  pinMode(RC_2, INPUT);
+  pinMode(RC_3, INPUT);
+  pinMode(RC_4, INPUT);
+  pinMode(RC_5, INPUT);
+  pinMode(RC_6, INPUT);
+  pinMode(RC_7, INPUT);
+  PCintPort::attachInterrupt(RC_1, rcInterrupt1, CHANGE);
+  PCintPort::attachInterrupt(RC_2, rcInterrupt2, CHANGE);
+  PCintPort::attachInterrupt(RC_3, rcInterrupt3, CHANGE);
+  PCintPort::attachInterrupt(RC_4, rcInterrupt4, CHANGE);
+  PCintPort::attachInterrupt(RC_5, rcInterrupt5, CHANGE);
+  PCintPort::attachInterrupt(RC_6, rcInterrupt6, CHANGE);
+  PCintPort::attachInterrupt(RC_7, rcInterrupt7, CHANGE);
 }
+
+void rcInterrupt1() {
+  if (!interruptLock) ch1 = micros() - rcLastChange1;
+  rcLastChange1 = micros();
+}
+
+void rcInterrupt2() {
+  if (!interruptLock) ch2 = micros() - rcLastChange2;
+  rcLastChange2 = micros();
+}
+
+void rcInterrupt3() {
+  if (!interruptLock) ch3 = micros() - rcLastChange3;
+  rcLastChange3 = micros();
+}
+
+void rcInterrupt4() {
+  if (!interruptLock) ch4 =  micros() - rcLastChange4;
+  rcLastChange4 = micros();
+}
+
+void rcInterrupt5() {
+  if (!interruptLock) ch5 =  micros() - rcLastChange5;
+  rcLastChange5 = micros();
+}
+
+void rcInterrupt6() {
+  if (!interruptLock) ch6 =  micros() - rcLastChange6;
+  rcLastChange6 = micros();
+}
+
+void rcInterrupt7() {
+  if (!interruptLock) ch7 =  micros() - rcLastChange7;
+  rcLastChange7 = micros();
+}
+
+inline void acquireLock() {
+  interruptLock = true;
+}
+
+inline void releaseLock() {
+  interruptLock = false;
+}
+
