@@ -14,25 +14,13 @@
 
 //#define VERBOSE_DEBUG
 
-//4.8
 #define PID_GYRO_P            4.7
-//4.5
-
-//0.01
 #define PID_GYRO_I            0.9
-
-
-//0.02
 #define PID_GYRO_D            2.5
-//0.015
 
-#define PID_ACCEL_P           1
-#define PID_ACCEL_I           0.8
-#define PID_ACCEL_D           3
-
-#define YAW_P_VAL 2
-#define YAW_I_VAL 5
-#define YAW_D_VAL 1
+#define YAW_P_VAL 0.2
+#define YAW_I_VAL 0
+#define YAW_D_VAL 2
 
 #define RC_1  A9
 #define RC_2  A10
@@ -73,8 +61,8 @@
 #define PITCH_MAX             15
 #define ROLL_MIN      -15
 #define ROLL_MAX      15
-#define YAW_MIN       -90
-#define YAW_MAX       90
+#define YAW_MIN       -180
+#define YAW_MAX       180
 
 #define MPU_INT_PIN 2
 
@@ -94,7 +82,7 @@
 #define ESC_REG_LOW   2100
 
 #define PID_XY_INFLUENCE    30.0
-#define PID_THROTTLE_INFLUENCE  50.0
+#define PID_YAW_INFLUENCE    30.0
 
 double orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
@@ -124,8 +112,8 @@ uint8_t fifoBuffer[64];                // fifo buffer
 
 volatile bool mpuInterrupt = false;    //interrupt flag
 
-double ch1, ch2, ch3, ch4, ch5;
-int ch6, ch7;
+double ch1, ch2, ch3, ch4;
+int ch5, ch6, ch7;
 unsigned long rcLastChange1 = micros();
 unsigned long rcLastChange2 = micros();
 unsigned long rcLastChange3 = micros();
@@ -139,13 +127,14 @@ double ch2Last = 0.0;
 double ch4Last = 0.0;
 double velocityLast = 0.0;
 
-bool engine_on = false;
+bool engine_on = true;
 
 double pid_gyro_p = PID_GYRO_P;
 double pid_gyro_i = PID_GYRO_I;
+double pid_gyro_d = PID_GYRO_D;
 
-PID xPID(&gyro_x, &v_ac, &adj_gyro_x, pid_gyro_p, pid_gyro_i, PID_GYRO_D, DIRECT);
-PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, pid_gyro_p, pid_gyro_i, PID_GYRO_D, DIRECT);
+PID xPID(&gyro_x, &v_ac, &adj_gyro_x, pid_gyro_p, pid_gyro_i, pid_gyro_d, DIRECT);
+PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, pid_gyro_p, pid_gyro_i, pid_gyro_d, DIRECT);
 PID yawPID(&yaw, &bal_axes, &yaw_target, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
 
 void setup() {
@@ -171,22 +160,26 @@ void setup() {
   yPID.SetMode(AUTOMATIC);
   yPID.SetSampleTime(PID_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
-
+  yawPID.SetMode(AUTOMATIC);
+  yawPID.SetOutputLimits(-PID_YAW_INFLUENCE, PID_YAW_INFLUENCE);
+    
   Serial.println(F("MPU init.."));
   initMPU();
 }
 
 void loop() {
-  digitalWrite(13, LOW);
   while(!mpuInterrupt && fifoCount < packetSize){
     
   }
-  digitalWrite(13, HIGH);
+#if 0
+  Serial.println(millis()%100);
+#endif
   if (!getYPR())
-    return;  
+    return;
+    
   count_presample();
   
-  if(!in_error)
+  if(presample_count < 0 && !in_error)
     position_adjust();
 }
 
@@ -251,13 +244,15 @@ void initMPU(){
   
   mpu.initialize();
   in_error = mpu.dmpInitialize();
+
+  mpu.setRate(1);
   
-  mpu.setXAccelOffset(-215);
-  mpu.setYAccelOffset(-1991);
-  mpu.setZAccelOffset(687);
-  mpu.setXGyroOffset(79);
-  mpu.setYGyroOffset(-33);
-  mpu.setZGyroOffset(67);
+  mpu.setXAccelOffset(-197);
+  mpu.setYAccelOffset(-1983);
+  mpu.setZAccelOffset(676);
+  mpu.setXGyroOffset(76);
+  mpu.setYGyroOffset(-32);
+  mpu.setZGyroOffset(69);
   
   if(in_error == 0){
     attachInterrupt(digitalPinToInterrupt(MPU_INT_PIN), dmpDataReady, RISING);
@@ -279,10 +274,10 @@ void set_servos(void)
   int va, vb, vc, vd;
   int regVal;
 
-  va = velocity * ((100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
-  vb = velocity * ((100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
-  vc = velocity * (abs(-100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
-  vd = velocity * (abs(-100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
+  va = ESC_MIN + (velocity - ESC_MIN) * ((100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
+  vb = ESC_MIN + (velocity - ESC_MIN) * ((100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
+  vc = ESC_MIN + (velocity - ESC_MIN) * (abs(-100.0 + v_ac)/100.0) * ((100.0+bal_axes)/100.0) + 0.5;
+  vd = ESC_MIN + (velocity - ESC_MIN) * (abs(-100.0 + v_bd)/100.0) * (abs(-100.0+bal_axes)/100.0) + 0.5;
 
   if (va > ESC_MAX) va = ESC_MAX;
   if (vb > ESC_MAX) vb = ESC_MAX;
@@ -311,6 +306,10 @@ void set_servos(void)
   ESC_D_REG = regVal;
 
 #if 0
+  Serial.print(F("yaw: "));
+  Serial.println(yaw);
+  Serial.print(F("bal_axes: "));
+  Serial.println(bal_axes);
   Serial.print(F("t : "));
   Serial.println(millis());
   Serial.print(F("gx : "));
@@ -348,15 +347,15 @@ void position_adjust(void)
   Serial.print("CH3:");Serial.println(ch3);
   Serial.print("CH4:");Serial.println(ch4);
 #endif
-  double temp_p, temp_i;
+
+  double temp_p, temp_i, temp_d;
   
   acquireLock();
   ch1 = floor(ch1/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
   ch2 = floor(ch2/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
   ch3 = floor(ch3/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
   ch4 = floor(ch4/10) * 10;
-  ch5 = floor(ch5/RC_ROUNDING_BASE) * RC_ROUNDING_BASE;
-
+  
   ch2 = map(ch2, RC_LOW_CH2, RC_HIGH_CH2, PITCH_MIN, PITCH_MAX);
   ch1 = map(ch1, RC_LOW_CH1, RC_HIGH_CH1, ROLL_MIN, ROLL_MAX);
   ch4 = map(ch4, RC_LOW_CH4, RC_HIGH_CH4, YAW_MIN, YAW_MAX);
@@ -367,8 +366,7 @@ void position_adjust(void)
   if ((ch4 < YAW_MIN) || (ch4 > YAW_MAX)) ch4 = ch4Last;
   if ((velocity < ESC_MIN) || (velocity > ESC_MAX)) velocity = velocityLast;
 
-  if (ch5 > RC_LOW_CH5 && ch5 < RC_HIGH_CH5) engine_on = 1;
-  else if (ch5 > 900 && ch5 < 1100) engine_on = 0;
+  if (ch1 < ROLL_MIN + 10 && velocity < ESC_MIN + 10) engine_on = false;
 
   ch1Last = ch1;
   ch2Last = ch2;
@@ -379,26 +377,33 @@ void position_adjust(void)
   adj_gyro_y = - ch2 + ch1;
   yaw_target = ch4;
 
-  temp_p = ch6 - 1000 - ch6%10;
-  temp_p /= 100.0;
-  if (temp_p >= 0 && temp_p < 10 && temp_p != pid_gyro_p) {
+  temp_p = (ch6 - 1000 + 15) / 30 * 30;
+  temp_p /= 50.0;
+  if (temp_p >= 0 && temp_p < 1000 / 50 && temp_p != pid_gyro_p) {
     pid_gyro_p = temp_p;
-#if 0
     Serial.print(F("P:"));Serial.println(pid_gyro_p);
-#endif
-    xPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
-    yPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
+    xPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
+    yPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
   }
 
-  temp_i = ch7 - 1000 - ch7%10;
+  temp_i = (ch7 - 1000 + 25) / 50 * 50;
   temp_i /= 1000.0;
-  if (temp_i >= 0 && temp_i < 1 && temp_i != pid_gyro_i) {
+  temp_i -= 0.05;
+  if (temp_i >= 0 && temp_i < 1000.0 / 1000.0 && temp_i != pid_gyro_i) {
     pid_gyro_i = temp_i;
-#if 0
     Serial.print(F("I:"));Serial.println(pid_gyro_i);
-#endif
-    xPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
-    yPID.SetTunings(pid_gyro_p, pid_gyro_i, PID_GYRO_D);
+    xPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
+    yPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
+  }
+
+  temp_d = (ch5 - 1000 + 25) / 50 * 50;
+  temp_d /= 100.0;
+  temp_d -= 0.5;
+  if (temp_d >= 0 && temp_d < 1000.0 / 100.0 && temp_d != pid_gyro_d) {
+    pid_gyro_d = temp_d;
+    Serial.print(F("D:"));Serial.println(pid_gyro_d);
+    xPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
+    yPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
   }
   releaseLock();
 
