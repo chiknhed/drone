@@ -18,10 +18,6 @@
 #define PID_GYRO_I            0.9
 #define PID_GYRO_D            2.5
 
-#define YAW_P_VAL 0.2
-#define YAW_I_VAL 0
-#define YAW_D_VAL 2
-
 #define RC_1  A9
 #define RC_2  A10
 #define RC_3  A11
@@ -61,8 +57,8 @@
 #define PITCH_MAX             15
 #define ROLL_MIN      -15
 #define ROLL_MAX      15
-#define YAW_MIN       -180
-#define YAW_MAX       180
+#define YAW_MIN       -30
+#define YAW_MAX       30
 
 #define MPU_INT_PIN 2
 
@@ -82,14 +78,11 @@
 #define ESC_REG_LOW   2100
 
 #define PID_XY_INFLUENCE    30.0
-#define PID_YAW_INFLUENCE    30.0
 
-double orig_yaw = 0;
 double adj_accel_z = 0, adj_gyro_x = 0, adj_gyro_y = 0;
 double accel_z, gyro_x, gyro_y;
 
 double v_ac, v_bd, velocity, bal_axes;
-double yaw_target;
 
 int presample_count  = PRESAMPLE_COUNT;
 boolean resample_sensor = false;
@@ -100,7 +93,6 @@ VectorFloat gravity;
 int16_t accel_data[3];
 float ypr[3] = {0.0f,0.0f,0.0f};       // yaw pitch roll values
 float yprLast[3] = {0.0f, 0.0f, 0.0f};
-double yaw;
 
 volatile bool interruptLock = false;
 
@@ -135,7 +127,6 @@ double pid_gyro_d = PID_GYRO_D;
 
 PID xPID(&gyro_x, &v_ac, &adj_gyro_x, pid_gyro_p, pid_gyro_i, pid_gyro_d, DIRECT);
 PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, pid_gyro_p, pid_gyro_i, pid_gyro_d, DIRECT);
-PID yawPID(&yaw, &bal_axes, &yaw_target, YAW_P_VAL, YAW_I_VAL, YAW_D_VAL, DIRECT);
 
 void setup() {
   initRC();
@@ -160,8 +151,6 @@ void setup() {
   yPID.SetMode(AUTOMATIC);
   yPID.SetSampleTime(PID_SAMPLE_PERIOD);
   yPID.SetOutputLimits(-PID_XY_INFLUENCE, PID_XY_INFLUENCE);
-  yawPID.SetMode(AUTOMATIC);
-  yawPID.SetOutputLimits(-PID_YAW_INFLUENCE, PID_YAW_INFLUENCE);
     
   Serial.println(F("MPU init.."));
   initMPU();
@@ -245,15 +234,17 @@ void initMPU(){
   mpu.initialize();
   in_error = mpu.dmpInitialize();
 
-  mpu.setRate(1);
-  
+  //mpu.setRate(2);
+
+#if 0
   mpu.setXAccelOffset(-197);
   mpu.setYAccelOffset(-1983);
   mpu.setZAccelOffset(676);
   mpu.setXGyroOffset(76);
   mpu.setYGyroOffset(-32);
   mpu.setZGyroOffset(69);
-  
+#endif
+
   if(in_error == 0){
     attachInterrupt(digitalPinToInterrupt(MPU_INT_PIN), dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
@@ -305,17 +296,19 @@ void set_servos(void)
   regVal = map(vd, ESC_MIN, ESC_MAX, ESC_REG_LOW, ESC_REG_HIGH);
   ESC_D_REG = regVal;
 
-#if 0
-  Serial.print(F("yaw: "));
-  Serial.println(yaw);
-  Serial.print(F("bal_axes: "));
-  Serial.println(bal_axes);
-  Serial.print(F("t : "));
-  Serial.println(millis());
+
+#if 0  
+  
   Serial.print(F("gx : "));
   Serial.println(gyro_x);
   Serial.print(F("gy : "));
-  Serial.println(gyro_y);
+  Serial.println(gyro_y); 
+  Serial.print(F("bal_axes: "));
+  Serial.println(bal_axes);
+
+  Serial.print(F("t : "));
+  Serial.println(millis());
+ 
   Serial.print(F("adj_accel_z : "));
   Serial.println(adj_accel_z);
   Serial.print(F("accel_z : "));
@@ -375,7 +368,7 @@ void position_adjust(void)
 
   adj_gyro_x = - ch2 - ch1;
   adj_gyro_y = - ch2 + ch1;
-  yaw_target = ch4;
+  bal_axes = ch4;
 
   temp_p = (ch6 - 1000 + 15) / 30 * 30;
   temp_p /= 50.0;
@@ -413,13 +406,10 @@ void position_adjust(void)
   Serial.println(ch1);
   Serial.print(F("ch2:"));
   Serial.println(ch2);
-  Serial.print(F("yaw_t:"));
-  Serial.println(yaw_target);
 #endif
 
   xPID.Compute();
   yPID.Compute();
-  yawPID.Compute();
   
   set_servos();
 }
@@ -444,7 +434,6 @@ boolean getYPR(){
 
     if (resample_sensor) {
       resample_sensor = false;
-      orig_yaw = ypr[0] * 180 / M_PI;
         
       Serial.println(F("R."));
     }
@@ -463,7 +452,6 @@ boolean getYPR(){
 
     gyro_x = ypr[2];
     gyro_y = - ypr[1];
-    yaw = ypr[0] - orig_yaw;
 
     return true;
   }
