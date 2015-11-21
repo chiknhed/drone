@@ -18,6 +18,9 @@
 #define PID_GYRO_I            0.9
 #define PID_GYRO_D            2.5
 
+#define SDA_PIN     (20)
+#define SCL_PIN     (21)
+
 #define RC_1  A9
 #define RC_2  A10
 #define RC_3  A11
@@ -129,13 +132,14 @@ PID xPID(&gyro_x, &v_ac, &adj_gyro_x, pid_gyro_p, pid_gyro_i, pid_gyro_d, DIRECT
 PID yPID(&gyro_y, &v_bd,  &adj_gyro_y, pid_gyro_p, pid_gyro_i, pid_gyro_d, DIRECT);
 
 void setup() {
+  resetI2C();
+  Wire.begin();
+  Wire.setClock(400000L);
+  
   initRC();
   
   Serial.begin(115200);
-
-  Wire.begin();
-  TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz)
-
+  
   pinMode(13, OUTPUT);
 
   Serial.println(F("Init Servos.."));
@@ -160,9 +164,7 @@ void loop() {
   while(!mpuInterrupt && fifoCount < packetSize){
     
   }
-#if 0
-  Serial.println(millis()%100);
-#endif
+
   if (!getYPR())
     return;
     
@@ -233,8 +235,6 @@ void initMPU(){
   
   mpu.initialize();
   in_error = mpu.dmpInitialize();
-
-  //mpu.setRate(2);
 
 #if 0
   mpu.setXAccelOffset(-197);
@@ -371,6 +371,11 @@ void position_adjust(void)
   bal_axes = ch4;
 
   temp_p = (ch6 - 1000 + 15) / 30 * 30;
+  temp_i = (ch7 - 1000 + 25) / 50 * 50;
+  temp_d = (ch5 - 1000 + 25) / 50 * 50;
+  
+  releaseLock();
+
   temp_p /= 50.0;
   if (temp_p >= 0 && temp_p < 1000 / 50 && temp_p != pid_gyro_p) {
     pid_gyro_p = temp_p;
@@ -379,7 +384,6 @@ void position_adjust(void)
     yPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
   }
 
-  temp_i = (ch7 - 1000 + 25) / 50 * 50;
   temp_i /= 1000.0;
   temp_i -= 0.05;
   if (temp_i >= 0 && temp_i < 1000.0 / 1000.0 && temp_i != pid_gyro_i) {
@@ -388,8 +392,7 @@ void position_adjust(void)
     xPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
     yPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
   }
-
-  temp_d = (ch5 - 1000 + 25) / 50 * 50;
+  
   temp_d /= 100.0;
   temp_d -= 0.5;
   if (temp_d >= 0 && temp_d < 1000.0 / 100.0 && temp_d != pid_gyro_d) {
@@ -398,14 +401,11 @@ void position_adjust(void)
     xPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
     yPID.SetTunings(pid_gyro_p, pid_gyro_i, pid_gyro_d);
   }
-  releaseLock();
 
 #if 0
-  Serial.print("CH5:"); Serial.println(ch5);
-  Serial.print(F("ch1:"));
-  Serial.println(ch1);
-  Serial.print(F("ch2:"));
-  Serial.println(ch2);
+  Serial.print(F("ch1:")); Serial.println(ch1);
+  Serial.print(F("ch2:")); Serial.println(ch2);
+  Serial.print(F("ch4:")); Serial.println(ch4);
 #endif
 
   xPID.Compute();
@@ -418,16 +418,20 @@ boolean getYPR(){
   mpuInterrupt = false;
   mpuIntStatus = mpu.getIntStatus();
   fifoCount = mpu.getFIFOCount();
-
   if((mpuIntStatus & 0x10) || fifoCount >= 1024){
+    Serial.print(F("fifocount : "));Serial.println(fifoCount);
     mpu.resetFIFO(); 
-    Serial.print(F("rf : "));
-    Serial.println(millis());
     return false;
   } else if(mpuIntStatus & 0x02){
-    while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
-    mpu.getFIFOBytes(fifoBuffer, packetSize);
-    fifoCount -= packetSize;
+    while (fifoCount < packetSize) {
+      fifoCount = mpu.getFIFOCount();
+    }
+
+    do {
+      mpu.getFIFOBytes(fifoBuffer, packetSize);
+      fifoCount -= packetSize;
+    } while (fifoCount > packetSize);
+    
     mpu.dmpGetQuaternion(&q, fifoBuffer);
     mpu.dmpGetGravity(&gravity, &q);
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
@@ -528,3 +532,40 @@ inline void releaseLock() {
   interruptLock = false;
 }
 
+void resetI2C(void)
+{
+  // reset I2C bus
+  // This ensures that if the nav6 was reset, but the devices
+  // on the I2C bus were not, that any transfer in progress do
+  // not hang the device/bus.  Since the MPU-6050 has a 1024-byte
+  // fifo, and there are 8 bits/byte, 10,000 clock edges
+  // are generated to ensure the fifo is completely cleared
+  // in the worst case.
+
+  pinMode(SDA_PIN, INPUT);
+  pinMode(SCL_PIN, OUTPUT);
+
+  // Clock through up to 1000 bits
+  int x = 0;
+  for ( int i = 0; i < 10000; i++ ) {
+
+    digitalWrite(SCL_PIN, HIGH);
+    digitalWrite(SCL_PIN, LOW);
+    digitalWrite(SCL_PIN, HIGH);
+
+    x++;
+    if ( x == 8 ) {
+      x = 0;
+      // send a I2C stop signal
+      pinMode(SDA_PIN, OUTPUT);
+      digitalWrite(SDA_PIN, HIGH);
+      digitalWrite(SDA_PIN, LOW);
+      pinMode(SDA_PIN, INPUT);
+    }
+  }
+
+  // send a I2C stop signal
+  pinMode(SDA_PIN, OUTPUT);
+  digitalWrite(SDA_PIN, HIGH);
+  digitalWrite(SDA_PIN, LOW);
+}
